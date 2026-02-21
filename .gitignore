@@ -1,5 +1,4 @@
 .gradle
-.cursor
 build/
 !gradle/wrapper/gradle-wrapper.jar
 !**/src/main/**/build/
@@ -22,6 +21,8 @@ out/
 .classpath
 .factorypath
 .project
+.cursor
+.env
 .settings
 .springBeans
 .sts4-cache
