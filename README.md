@@ -221,6 +221,90 @@ curl -X GET http://localhost:8080/api/some-protected-endpoint \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN_HERE"
 ```
 
+## User Profile Endpoints
+
+Все endpoints для работы с профилем находятся под префиксом `/api/users` и требуют JWT аутентификации.
+
+### 1. Получить текущий профиль
+
+**GET** `/api/users/me`
+
+Возвращает профиль текущего аутентифицированного пользователя.
+
+**Headers:**
+```
+Authorization: Bearer YOUR_ACCESS_TOKEN
+```
+
+**Response:**
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "name": "John Doe",
+  "email": "user@example.com",
+  "provider": "email",
+  "avatarUrl": "https://example.com/avatar.jpg"
+}
+```
+
+### 2. Обновить профиль
+
+**PUT** `/api/users/me`
+
+Обновляет профиль текущего аутентифицированного пользователя.
+
+**Headers:**
+```
+Authorization: Bearer YOUR_ACCESS_TOKEN
+Content-Type: application/json
+```
+
+**Request Body:**
+```json
+{
+  "name": "Updated Name",
+  "email": "newemail@example.com",
+  "avatarUrl": "https://example.com/new-avatar.jpg"
+}
+```
+
+**Response:**
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "name": "Updated Name",
+  "email": "newemail@example.com",
+  "provider": "email",
+  "avatarUrl": "https://example.com/new-avatar.jpg"
+}
+```
+
+**Примечания:**
+- Email должен быть уникальным (если меняется на существующий email другого пользователя - вернется ошибка 400)
+- Имя и email обязательны
+- AvatarUrl опционален (может быть null)
+- Для OAuth пользователей (VK, Yandex) можно обновлять все поля, включая email
+
+## Примеры curl запросов для профиля
+
+### Получить профиль:
+```bash
+curl -X GET http://localhost:8080/api/users/me \
+  -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
+```
+
+### Обновить профиль:
+```bash
+curl -X PUT http://localhost:8080/api/users/me \
+  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "New Name",
+    "email": "newemail@example.com",
+    "avatarUrl": "https://example.com/avatar.jpg"
+  }'
+```
+
 ## Структура проекта
 
 ```
@@ -232,6 +316,9 @@ src/main/java/ru/syncroom/
 │   ├── dto/                          # DTO классы
 │   └── client/                       # Внешние клиенты (OAuth)
 ├── users/                            # Модуль пользователей
+│   ├── controller/                   # REST контроллеры (профиль)
+│   ├── service/                      # Бизнес-логика (профиль)
+│   ├── dto/                          # DTO классы (профиль)
 │   ├── domain/                       # JPA сущности
 │   └── repository/                   # Репозитории
 ├── common/                           # Общие компоненты
@@ -286,12 +373,21 @@ gradle test
 
 ### Структура тестов
 
-Тесты находятся в `src/test/java/ru/syncroom/auth/controller/AuthControllerTest.java` и покрывают:
+Тесты находятся в:
+- `src/test/java/ru/syncroom/auth/controller/AuthControllerTest.java` - тесты аутентификации
+- `src/test/java/ru/syncroom/users/controller/UserControllerTest.java` - тесты профиля
 
+Покрытие тестами:
+
+**Аутентификация:**
 - ✅ **POST /api/auth/register** - успешная регистрация, дубликат email, валидация
 - ✅ **POST /api/auth/email** - успешная аутентификация, неверный пароль, пользователь не найден
 - ✅ **POST /api/auth/oauth** - успешная аутентификация (новый/существующий пользователь), неверный провайдер, неверный токен
 - ✅ **POST /api/auth/refresh** - успешное обновление, неверный токен, access токен вместо refresh, пользователь не найден
+
+**Профиль пользователя:**
+- ✅ **GET /api/users/me** - успешное получение профиля, не авторизован
+- ✅ **PUT /api/users/me** - успешное обновление, дубликат email, валидация, не авторизован
 
 Тесты используют:
 - H2 in-memory database для изоляции
