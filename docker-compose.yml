@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  # PostgreSQL база данных
+  postgres:
+    image: postgres:17-alpine
+    container_name: syncroom-postgres
+    environment:
+      POSTGRES_DB: ${DB_NAME:-syncroom}
+      POSTGRES_USER: ${DB_USERNAME:-syncroom}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-syncroom}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-syncroom} -d ${DB_NAME:-syncroom}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - syncroom-network
+
+  # Spring Boot приложение
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: syncroom-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      DB_NAME: ${DB_NAME:-syncroom}
+      DB_USERNAME: ${DB_USERNAME:-syncroom}
+      DB_PASSWORD: ${DB_PASSWORD:-syncroom}
+      JWT_SECRET: ${JWT_SECRET:-your-256-bit-secret-key-change-in-production-minimum-32-characters}
+      JWT_ACCESS_EXPIRATION: ${JWT_ACCESS_EXPIRATION:-900000}
+      JWT_REFRESH_EXPIRATION: ${JWT_REFRESH_EXPIRATION:-2592000000}
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    networks:
+      - syncroom-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  syncroom-network:
+    driver: bridge

@@ -50,6 +50,9 @@ dependencies {
     testImplementation("org.springframework.security:spring-security-test")
     testImplementation(platform("org.junit:junit-bom:5.10.0"))
     testImplementation("org.junit.jupiter:junit-jupiter")
+    testImplementation("com.h2database:h2") // In-memory database for tests
+    testImplementation("org.mockito:mockito-core")
+    testImplementation("org.mockito:mockito-junit-jupiter")
 }
 
 tasks.test {

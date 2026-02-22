@@ -13,51 +13,67 @@ Backend приложение для SyncRoom на базе Spring Boot с под
 - Spring Data JPA
 - SpringDoc OpenAPI (Swagger UI) для документации API
 
-## Требования
-
-- Java 21 или выше
-- PostgreSQL 12 или выше
-- Gradle 7.5+ (или используйте Gradle Wrapper)
-
-## Настройка базы данных
-
-1. Создайте базу данных PostgreSQL:
-```sql
-CREATE DATABASE syncroom;
-CREATE USER syncroom WITH PASSWORD 'syncroom';
-GRANT ALL PRIVILEGES ON DATABASE syncroom TO syncroom;
-```
-
-2. Настройте переменные окружения (опционально):
-   - `DB_NAME` - имя базы данных (по умолчанию: `syncroom`)
-   - `DB_USERNAME` - имя пользователя БД (по умолчанию: `syncroom`)
-   - `DB_PASSWORD` - пароль БД (по умолчанию: `syncroom`)
-   - `JWT_SECRET` - секретный ключ для JWT (по умолчанию: `your-256-bit-secret-key-change-in-production-minimum-32-characters`)
-   - `JWT_ACCESS_EXPIRATION` - время жизни access токена в миллисекундах (по умолчанию: `900000` = 15 минут)
-   - `JWT_REFRESH_EXPIRATION` - время жизни refresh токена в миллисекундах (по умолчанию: `2592000000` = 30 дней)
 
 ## Запуск приложения
 
-### Используя Gradle Wrapper:
+### Используя Docker (рекомендуется):
+
+Самый простой способ запустить всё приложение одной командой:
 
 ```bash
-./gradlew bootRun
+docker-compose up -d
 ```
 
-### Используя установленный Gradle:
+📖 **Подробные инструкции по Docker**: см. [DOCKER.md](DOCKER.md)
+
+Это запустит:
+- PostgreSQL базу данных на порту 5432
+- Spring Boot приложение на порту 8080
+
+Приложение будет доступно по адресу http://localhost:8080.
+
+**Остановка:**
+```bash
+docker-compose down
+```
+
+**Остановка с удалением данных:**
+```bash
+docker-compose down -v
+```
+
+**Пересборка и запуск:**
+```bash
+docker-compose up -d --build
+```
+
+**Просмотр логов:**
+```bash
+docker-compose logs -f app
+```
+
+**Переменные окружения для Docker:**
+
+Вы можете создать файл `.env` в корне проекта для настройки переменных окружения. Пример конфигурации находится в файле `.env.example`:
 
 ```bash
-gradle bootRun
+cp .env.example .env
+# Отредактируйте .env файл по необходимости
 ```
 
-Приложение запустится на порту 8080 (http://localhost:8080).
+Доступные переменные:
+- `DB_NAME` - имя базы данных (по умолчанию: `syncroom`)
+- `DB_USERNAME` - имя пользователя БД (по умолчанию: `syncroom`)
+- `DB_PASSWORD` - пароль БД (по умолчанию: `syncroom`)
+- `JWT_SECRET` - секретный ключ для JWT (обязательно измените в production!)
+- `JWT_ACCESS_EXPIRATION` - время жизни access токена в миллисекундах (по умолчанию: `900000` = 15 минут)
+- `JWT_REFRESH_EXPIRATION` - время жизни refresh токена в миллисекундах (по умолчанию: `2592000000` = 30 дней)
+- `APP_PORT` - порт приложения (по умолчанию: `8080`)
+- `POSTGRES_PORT` - порт PostgreSQL (по умолчанию: `5432`)
 
-## Swagger UI (API Документация)
+### Запуск используя Gradle Wrapper:
 
-После запуска приложения доступна интерактивная документация API через Swagger UI:
-
-- **Swagger UI**: http://localhost:8080/swagger-ui.html
-- **OpenAPI JSON**: http://localhost:8080/v3/api-docs
+📖 **Подробные инструкции по GRADLE**: см. [RUN GRADLE.md](./RUN%20GRADLE.md)
 
 Swagger UI позволяет:
 - Просматривать все доступные endpoints
@@ -126,11 +142,13 @@ Swagger UI позволяет:
 ```json
 {
   "provider": "vk",
-  "accessToken": "external_access_token_from_provider"
+  "accessToken": "vk_access_token_from_client"
 }
 ```
 
-**Примечание:** В текущей реализации используется заглушка `ExternalOAuthClient`, которая возвращает фейковые данные. В production необходимо заменить на реальные API вызовы к VK/Yandex.
+**Примечание:** 
+- Для VK: требуется реальный access token, полученный от VK OAuth (https://oauth.vk.com/authorize). Backend проверяет токен через VK API (https://api.vk.com/method/users.get).
+- Для Yandex: требуется реальный access token, полученный от Yandex OAuth (https://oauth.yandex.ru/authorize). Backend проверяет токен через Yandex API (https://login.yandex.ru/info).
 
 **Response:** (аналогично регистрации)
 
@@ -178,13 +196,13 @@ curl -X POST http://localhost:8080/api/auth/email \
   }'
 ```
 
-### OAuth (заглушка):
+### OAuth (VK):
 ```bash
 curl -X POST http://localhost:8080/api/auth/oauth \
   -H "Content-Type: application/json" \
   -d '{
     "provider": "vk",
-    "accessToken": "fake_token_123"
+    "accessToken": "YOUR_VK_ACCESS_TOKEN"
   }'
 ```
 
@@ -241,14 +259,45 @@ src/main/java/ru/syncroom/
 
 ## Замечания
 
-1. **OAuth клиент:** Текущая реализация `ExternalOAuthClient` является заглушкой. Для production необходимо:
-   - Реализовать реальные API вызовы к VK OAuth API
-   - Реализовать реальные API вызовы к Yandex OAuth API
-   - Добавить обработку ошибок от внешних API
+1. **OAuth клиент:** 
+   - ✅ VK OAuth реализован и работает с реальным VK API
+   - ✅ Yandex OAuth реализован и работает с реальным Yandex API
+   - Backend проверяет валидность access token через соответствующие API провайдеров
 
 2. **JWT Secret:** В production обязательно измените `JWT_SECRET` на надёжный случайный ключ длиной не менее 32 символов.
 
 3. **База данных:** Убедитесь, что PostgreSQL запущен и доступен перед запуском приложения.
+
+## Тестирование
+
+Проект содержит интеграционные тесты для всех endpoints аутентификации.
+
+### Запуск тестов
+
+```bash
+./gradlew test
+```
+
+или
+
+```bash
+gradle test
+```
+
+### Структура тестов
+
+Тесты находятся в `src/test/java/ru/syncroom/auth/controller/AuthControllerTest.java` и покрывают:
+
+- ✅ **POST /api/auth/register** - успешная регистрация, дубликат email, валидация
+- ✅ **POST /api/auth/email** - успешная аутентификация, неверный пароль, пользователь не найден
+- ✅ **POST /api/auth/oauth** - успешная аутентификация (новый/существующий пользователь), неверный провайдер, неверный токен
+- ✅ **POST /api/auth/refresh** - успешное обновление, неверный токен, access токен вместо refresh, пользователь не найден
+
+Тесты используют:
+- H2 in-memory database для изоляции
+- MockBean для ExternalOAuthClient (не делают реальные запросы к VK API)
+- Spring Boot Test с MockMvc для тестирования REST endpoints
+- Профиль `test` с отдельной конфигурацией
 
 ## Разработка
 
