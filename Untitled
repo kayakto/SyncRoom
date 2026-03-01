@@ -1,9 +1,0 @@
-DB_NAME=syncroom
-DB_USERNAME=syncroom
-DB_PASSWORD=syncroom
-
-JWT_SECRET=your-256-bit-secret-key-change-in-production-minimum-32-characters
-JWT_ACCESS_EXPIRATION=900000 # 15 minutes in milliseconds
-JWT_REFRESH_EXPIRATION=2592000000
-APP_PORT=8080
-POSTGRES_PORT=5432
