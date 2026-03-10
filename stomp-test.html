@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>SyncRoom WebSocket Tester</title>
+  <style>
+    body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 20px; }
+    input, textarea { width: 100%; box-sizing: border-box; background: #313244; color: #cdd6f4;
+                      border: 1px solid #45475a; padding: 8px; border-radius: 4px; margin-bottom: 8px; }
+    button { background: #89b4fa; color: #1e1e2e; border: none; padding: 8px 16px;
+             border-radius: 4px; cursor: pointer; margin-right: 8px; font-weight: bold; }
+    button:hover { background: #74c7ec; }
+    button.danger { background: #f38ba8; }
+    #log { background: #181825; border: 1px solid #45475a; padding: 12px; height: 400px;
+           overflow-y: auto; border-radius: 4px; }
+    .in  { color: #a6e3a1; } /* green = received */
+    .out { color: #fab387; } /* orange = sent */
+    .info{ color: #89dceb; } /* cyan = system */
+    .err { color: #f38ba8; } /* red = error */
+    .ts  { color: #6c7086; font-size: 11px; }
+    h3   { color: #89b4fa; margin-top: 20px; }
+  </style>
+</head>
+<body>
+  <h2>🔌 SyncRoom STOMP Tester</h2>
+
+  <h3>1. Токен (из POST /api/auth/email или /oauth)</h3>
+  <input id="token" type="text" placeholder="eyJhbGci..." />
+
+  <h3>2. Подключение</h3>
+  <button onclick="connect()">Connect</button>
+  <button class="danger" onclick="disconnect()">Disconnect</button>
+
+  <h3>3. Подписка на комнату</h3>
+  <input id="roomId" type="text" placeholder="UUID комнаты (из GET /api/rooms)" />
+  <button onclick="subscribe()">Subscribe to /topic/room/{roomId}</button>
+
+  <h3>4. Лог событий</h3>
+  <div id="log"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+  <script>
+    let client = null;
+    let subscription = null;
+
+    function log(msg, cls = 'info') {
+      const el = document.getElementById('log');
+      const ts = new Date().toLocaleTimeString('ru', {hour12: false, fractionalSecondDigits: 3});
+      el.innerHTML += `<div><span class="ts">[${ts}]</span> <span class="${cls}">${escHtml(msg)}</span></div>`;
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function escHtml(s) {
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    function connect() {
+      const token = document.getElementById('token').value.trim();
+      if (!token) { log('⚠️ Введи токен!', 'err'); return; }
+
+      // Native WebSocket endpoint (no SockJS)
+      const socket = new WebSocket('ws://localhost:8080/ws-stomp');
+      client = Stomp.over(socket);
+      client.debug = (msg) => log('DBG: ' + msg, 'info');
+
+      const headers = { 'Authorization': 'Bearer ' + token };
+
+      client.connect(headers,
+        function onConnect(frame) {
+          log('✅ CONNECTED: ' + frame, 'in');
+        },
+        function onError(err) {
+          log('❌ ERROR: ' + err, 'err');
+        }
+      );
+      log('⏳ Connecting to ws://localhost:8080/ws-stomp ...', 'out');
+    }
+
+    function subscribe() {
+      if (!client || !client.connected) { log('⚠️ Сначала подключись!', 'err'); return; }
+      const roomId = document.getElementById('roomId').value.trim();
+      if (!roomId) { log('⚠️ Введи roomId!', 'err'); return; }
+
+      const dest = '/topic/room/' + roomId;
+      if (subscription) subscription.unsubscribe();
+
+      subscription = client.subscribe(dest, function(frame) {
+        try {
+          const event = JSON.parse(frame.body);
+          log('📨 EVENT [' + event.type + ']: ' + JSON.stringify(event.payload, null, 2), 'in');
+        } catch(e) {
+          log('📨 RAW: ' + frame.body, 'in');
+        }
+      });
+
+      log('👂 Subscribed to ' + dest, 'out');
+      log('Теперь вызови POST /api/rooms/' + roomId + '/join или /leave — придёт событие', 'info');
+    }
+
+    function disconnect() {
+      if (client) { client.disconnect(() => log('🔌 Disconnected', 'info')); }
+    }
+  </script>
+</body>
+</html>

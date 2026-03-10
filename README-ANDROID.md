@@ -1,425 +1,264 @@
-# SyncRoom — Что изменилось в последнем обновлении
+# SyncRoom — Документация для Android разработчика
 
-> **Для Android-разработчиков:** В этом обновлении добавлены три новых раздела API кроме авторизации: **Points** (сохранённые места пользователя), **Rooms** (комнаты) и обновлённые правила участия в комнатах.
+> Актуальное состояние backend API. Все эндпоинты требуют `Authorization: Bearer <accessToken>`, кроме `/api/auth/*`.
 
----
-
-## Базовый URL и авторизация
-
-Каждый запрос (кроме `/api/auth/*`) должен содержать заголовок:
-
-```
-Authorization: Bearer <accessToken>
-```
-
-`accessToken` получается при логине через `/api/auth/login`, `/api/auth/register` или `/api/auth/oauth`.
+**Base URL:** `http://host:8080`  
+**WebSocket URL:** `ws://host:8080/ws-stomp`
 
 ---
 
-## 📍 Points — Сохранённые места пользователя
+## Что изменилось в последних шагах
 
-Пользователь может сохранять до N мест с геолокацией и контекстом (`work`, `study`, `sport`, `leisure`).
+| Шаг | Что добавлено |
+|-----|---------------|
+| **1 — Auth** | JWT авторизация: email, VK, Yandex |
+| **2 — Points** | CRUD точек на карте |
+| **3 — Rooms** | Список комнат, join, leave, my rooms; правило «1 пользователь = 1 комната» |
+| **4 — WebSocket** | STOMP-подключение, события `PARTICIPANT_JOINED` / `PARTICIPANT_LEFT`, обновлённый ответ `POST /join` |
 
-### Структура объекта `PointResponse`
+---
 
+## Авторизация
+
+```
+POST /api/auth/email       { "email": "...", "password": "..." }
+POST /api/auth/register    { "email": "...", "password": "...", "name": "..." }
+POST /api/auth/oauth       { "provider": "vk|yandex", "accessToken": "..." }
+POST /api/auth/refresh     { "refreshToken": "..." }
+```
+
+**Ответ (все auth-эндпоинты):**
 ```json
 {
-  "id": "uuid",
-  "userId": "uuid",
-  "context": "work",
-  "title": "Офис",
-  "address": "Москва, Тверская ул., 1",
-  "latitude": 55.751244,
-  "longitude": 37.618423
+  "accessToken": "eyJ...",
+  "refreshToken": "eyJ...",
+  "isFirstLogin": true
 }
 ```
 
-### Получить все точки пользователя
+---
+
+## Points — Точки на карте
 
 ```
-GET /api/users/{userId}/points
-Authorization: Bearer <token>
+GET    /api/users/{userId}/points
+POST   /api/users/{userId}/points
+PUT    /api/users/{userId}/points/{pointId}
+DELETE /api/users/{userId}/points/{pointId}  → 204
 ```
 
-**Ответ `200 OK`:** массив `PointResponse[]`
-
-```kotlin
-// Retrofit
-@GET("/api/users/{userId}/points")
-suspend fun getPoints(
-    @Path("userId") userId: String,
-    @Header("Authorization") token: String
-): List<PointResponse>
+**Структура точки:**
+```json
+{ "id": "uuid", "userId": "uuid", "context": "work|study|sport|leisure",
+  "title": "Офис", "address": "Тверская, 1", "latitude": 55.75, "longitude": 37.62 }
 ```
 
 ---
 
-### Создать точку
+## Rooms — Комнаты
+
+> **Правило:** 1 пользователь = 1 комната. Чтобы войти в другую — сначала `/leave`.  
+> **`isActive`** = есть ли свободные места.
+
+**Структура комнаты:**
+```json
+{ "id": "uuid", "context": "work", "title": "Работа",
+  "participantCount": 3, "maxParticipants": 10, "isActive": true }
+```
+
+### Эндпоинты
 
 ```
-POST /api/users/{userId}/points
-Authorization: Bearer <token>
-Content-Type: application/json
+GET  /api/rooms           → все комнаты (фильтруй isActive на клиенте)
+GET  /api/rooms/my        → комнаты текущего пользователя
+POST /api/rooms/{id}/join → войти в комнату
+POST /api/rooms/{id}/leave → выйти из комнаты → 204
 ```
 
-**Тело запроса:**
+### POST /join — ответ (обновлено в Шаге 4)
 
 ```json
 {
-  "context": "work",
-  "title": "Офис",
-  "address": "Москва, Тверская ул., 1",
-  "latitude": 55.751244,
-  "longitude": 37.618423
+  "room": { "id": "uuid", "context": "work", "title": "Работа",
+            "participantCount": 1, "maxParticipants": 10, "isActive": true },
+  "participants": [
+    { "userId": "uuid", "name": "Иван", "avatarUrl": null, "joinedAt": "2026-03-10T13:00:00+05:00" }
+  ]
 }
 ```
 
-Допустимые значения `context`: `work`, `study`, `sport`, `leisure` (регистр не важен — нормализуется на сервере).
-
-**Ответ `201 Created`:** объект `PointResponse`
-
-**Ошибки:**
+**Коды ошибок (join/leave):**
 | Код | Причина |
 |-----|---------|
-| `400` | Неверный `context` или не пройдена валидация полей |
-| `404` | Пользователь не найден |
-| `401` | Нет токена или токен недействителен |
+| `400` | Уже в комнате / не состоит в комнате |
+| `404` | Комната не найдена |
+| `401` | Нет токена |
+
+---
+
+## WebSocket (STOMP) — Шаг 4 ✨
+
+### Подключение
+
+| Эндпоинт | Назначение |
+|----------|-----------|
+| `ws://host:8080/ws-stomp` | **Нативный WS** — для Android (рекомендуется) |
+| `ws://host:8080/ws/websocket` | SockJS transport — для web-клиентов |
+
+**Токен** передаётся в STOMP CONNECT frame (не в HTTP заголовке):
+```
+CONNECT
+Authorization:Bearer <accessToken>
+accept-version:1.2
+```
+
+### Подписка на события комнаты
+
+```
+SUBSCRIBE
+destination:/topic/room/{roomId}
+id:sub-0
+```
+
+### Формат события (приходит подписчикам)
+
+```json
+{
+  "type": "PARTICIPANT_JOINED",
+  "payload": {
+    "userId": "uuid",
+    "name": "Иван",
+    "avatarUrl": null,
+    "joinedAt": "2026-03-10T13:00:00+05:00"
+  },
+  "timestamp": "2026-03-10T13:00:00+05:00"
+}
+```
+
+**Типы событий:**
+| Тип | Когда |
+|-----|-------|
+| `PARTICIPANT_JOINED` | Кто-то вызвал `POST /join` |
+| `PARTICIPANT_LEFT` | Кто-то вызвал `POST /leave` |
+
+### Когда приходят события
+
+```
+Android A             Backend               Android B
+   │                     │                     │
+   │─ POST /join ────────►│                     │
+   │◄─ JoinRoomResponse──│                     │
+   │                     │── PARTICIPANT_JOINED ──► (все подписчики /topic/room/{id})
+   │                     │                     │
+   │─ POST /leave ───────►│                     │
+   │◄─ 204 No Content ───│                     │
+   │                     │── PARTICIPANT_LEFT ───► (все подписчики /topic/room/{id})
+```
+
+### Kotlin (Android) — пример подключения
 
 ```kotlin
-@POST("/api/users/{userId}/points")
-suspend fun createPoint(
-    @Path("userId") userId: String,
-    @Header("Authorization") token: String,
-    @Body request: CreatePointRequest
-): PointResponse
+// build.gradle: implementation("org.hildan.krossbow:krossbow-stomp-kxserialization-kotlinx:7.0.0")
+// или: implementation("com.github.NaikSoftware:StompProtocolAndroid:1.6.6")
 
-data class CreatePointRequest(
-    val context: String,   // "work" | "study" | "sport" | "leisure"
-    val title: String,
-    val address: String,
-    val latitude: Double,
-    val longitude: Double
+val client = OkHttpClient()
+val stompClient = StompClient.over(WebSocket.factory(client))
+
+val token = "eyJhbG..." // из SharedPreferences
+
+stompClient.connect(
+    "ws://192.168.x.x:8080/ws-stomp",
+    customHeaders = mapOf("Authorization" to "Bearer $token")
+)
+
+// Подписка
+stompClient
+    .subscribeTo("/topic/room/$roomId")
+    .collect { frame ->
+        val event = Json.decodeFromString<RoomEvent>(frame.body)
+        when (event.type) {
+            "PARTICIPANT_JOINED" -> updateParticipantList(event.payload)
+            "PARTICIPANT_LEFT"   -> removeParticipant(event.payload)
+        }
+    }
+```
+
+```kotlin
+// Data classes
+@Serializable
+data class RoomEvent(
+    val type: String,
+    val payload: JsonObject,
+    val timestamp: String
+)
+
+@Serializable
+data class ParticipantResponse(
+    val userId: String,
+    val name: String,
+    val avatarUrl: String?,
+    val joinedAt: String?
 )
 ```
 
----
+### Retrofit — полная спецификация
 
-### Обновить точку
+```kotlin
+interface SyncRoomApi {
+    // Auth
+    @POST("/api/auth/email")   suspend fun login(@Body b: LoginRequest): AuthResponse
+    @POST("/api/auth/register") suspend fun register(@Body b: RegisterRequest): AuthResponse
+    @POST("/api/auth/oauth")   suspend fun oauth(@Body b: OAuthRequest): AuthResponse
+    @POST("/api/auth/refresh") suspend fun refresh(@Body b: RefreshRequest): AuthResponse
 
-```
-PUT /api/users/{userId}/points/{pointId}
-Authorization: Bearer <token>
-Content-Type: application/json
-```
+    // Points
+    @GET("/api/users/{uid}/points")
+    suspend fun getPoints(@Path("uid") uid: String, @Header("Authorization") token: String): List<PointResponse>
 
-Тело запроса — то же, что и при создании. Обновляются все поля.
+    @POST("/api/users/{uid}/points")
+    suspend fun createPoint(@Path("uid") uid: String, @Header("Authorization") token: String, @Body b: CreatePointRequest): PointResponse
 
-**Ответ `200 OK`:** обновлённый `PointResponse`
+    @PUT("/api/users/{uid}/points/{pid}")
+    suspend fun updatePoint(@Path("uid") uid: String, @Path("pid") pid: String, @Header("Authorization") token: String, @Body b: CreatePointRequest): PointResponse
 
-**Ошибки:**
-| Код | Причина |
-|-----|---------|
-| `404` | Точка не найдена (или принадлежит другому пользователю) |
-| `400` | Неверный `context` или валидация |
+    @DELETE("/api/users/{uid}/points/{pid}")
+    suspend fun deletePoint(@Path("uid") uid: String, @Path("pid") pid: String, @Header("Authorization") token: String)
 
----
-
-### Удалить точку
-
-```
-DELETE /api/users/{userId}/points/{pointId}
-Authorization: Bearer <token>
-```
-
-**Ответ `204 No Content`**
-
-**Ошибки:** `404` — точка не найдена, `401` — не авторизован.
-
----
-
-## 🏠 Rooms — Комнаты
-
-> **Важное правило:** пользователь может находиться только в **одной комнате** одновременно. Чтобы войти в другую — нужно сначала выйти из текущей.
-
-### Структура объекта `RoomResponse`
-
-```json
-{
-  "id": "uuid",
-  "context": "sport",
-  "title": "Спортзал",
-  "participantCount": 3,
-  "maxParticipants": 10,
-  "isActive": true
+    // Rooms
+    @GET("/api/rooms")        suspend fun getRooms(@Header("Authorization") token: String): List<RoomResponse>
+    @GET("/api/rooms/my")     suspend fun getMyRooms(@Header("Authorization") token: String): List<RoomResponse>
+    @POST("/api/rooms/{id}/join")  suspend fun joinRoom(@Path("id") id: String, @Header("Authorization") token: String): JoinRoomResponse
+    @POST("/api/rooms/{id}/leave") suspend fun leaveRoom(@Path("id") id: String, @Header("Authorization") token: String)
 }
-```
 
-> **Важно:** поле называется именно `isActive` (не `active`). При маппинге в Kotlin убедитесь, что сериализатор не меняет имя.
-
-**`isActive`** — вычисляется динамически:
-- `true` → `participantCount < maxParticipants` (есть свободные места)
-- `false` → комната заполнена
-
----
-
-### Получить все комнаты
-
-```
-GET /api/rooms
-Authorization: Bearer <token>
-```
-
-**Ответ `200 OK`:** массив `RoomResponse[]` — возвращает ВСЕ комнаты. Фильтруйте по `isActive = true` на клиенте, чтобы показывать только доступные.
-
-```kotlin
-@GET("/api/rooms")
-suspend fun getAllRooms(
-    @Header("Authorization") token: String
-): List<RoomResponse>
+data class JoinRoomResponse(val room: RoomResponse, val participants: List<ParticipantResponse>)
+data class RoomResponse(val id: String, val context: String, val title: String,
+    val participantCount: Int, val maxParticipants: Int,
+    @SerializedName("isActive") val isActive: Boolean)
+data class ParticipantResponse(val userId: String, val name: String, val avatarUrl: String?, val joinedAt: String?)
 ```
 
 ---
 
-### Получить комнаты, в которых состоит текущий пользователь
+## Тестирование WebSocket
+
+Для ручного тестирования STOMP без Android — открой файл:
 
 ```
-GET /api/rooms/my
-Authorization: Bearer <token>
+stomp-test.html
 ```
 
-**Ответ `200 OK`:** массив `RoomResponse[]` — только те комнаты, где пользователь является участником. Поскольку действует правило «1 пользователь = 1 комната», обычно возвращает 0 или 1 элемент.
+1. Открой в браузере (Chrome/Firefox)
+2. Вставь `accessToken` → **Connect**
+3. Вставь `roomId` → **Subscribe**
+4. Вызови `POST /api/rooms/{id}/join` через Postman — увидишь событие `PARTICIPANT_JOINED`
 
-```kotlin
-@GET("/api/rooms/my")
-suspend fun getMyRooms(
-    @Header("Authorization") token: String
-): List<RoomResponse>
-```
-
----
-
-### Войти в комнату
-
-```
-POST /api/rooms/{roomId}/join
-Authorization: Bearer <token>
-```
-
-Тело запроса не нужно.
-
-**Ответ `200 OK`** (тело пустое)
-
-**Бизнес-логика при заполнении комнаты:**
-Когда последнее место занято, сервер автоматически:
-1. Помечает текущую комнату как `isActive = false`
-2. Создаёт новую пустую комнату с теми же `context`, `title`, `maxParticipants`
-
-Если вы отправляете `join` к уже заполненной комнате — вас автоматически добавляют в новую.
-
-**Ошибки:**
-| Код | Причина |
-|-----|---------|
-| `400` | Вы уже состоите в какой-либо комнате (сначала выйдите через `/leave`) |
-| `404` | Комната не найдена |
-| `401` | Не авторизован |
-
-```kotlin
-@POST("/api/rooms/{roomId}/join")
-suspend fun joinRoom(
-    @Path("roomId") roomId: String,
-    @Header("Authorization") token: String
-): Unit
-```
-
----
-
-### Покинуть комнату
-
-```
-POST /api/rooms/{roomId}/leave
-Authorization: Bearer <token>
-```
-
-Тело запроса не нужно.
-
-**Ответ `204 No Content`**
-
-**Бизнес-логика при выходе:**
-Если комната была закрыта (`isActive = false`, т.е. заполнена) и после выхода пользователя освободилось место — комната автоматически снова становится `isActive = true`.
-
-**Ошибки:**
-| Код | Причина |
-|-----|---------|
-| `400` | Вы не состоите в этой комнате |
-| `404` | Комната не найдена |
-| `401` | Не авторизован |
-
-```kotlin
-@POST("/api/rooms/{roomId}/leave")
-suspend fun leaveRoom(
-    @Path("roomId") roomId: String,
-    @Header("Authorization") token: String
-): Unit
-```
-
----
-
-## Типичный сценарий работы с комнатами
-
-```kotlin
-// 1. Получаем список доступных комнат
-val rooms = api.getAllRooms(token)
-val availableRooms = rooms.filter { it.isActive }
-
-// 2. Пользователь выбирает комнату и входит
-api.joinRoom(selectedRoom.id, token)
-
-// 3. Проверяем в каких комнатах сейчас пользователь
-val myRooms = api.getMyRooms(token)
-
-// 4. Пользователь выходит из комнаты
-api.leaveRoom(selectedRoom.id, token)
-
-// 5. Если пользователь уже в комнате и хочет сменить — сначала выйти
-val myRooms = api.getMyRooms(token)
-if (myRooms.isNotEmpty()) {
-    api.leaveRoom(myRooms.first().id, token)
-}
-api.joinRoom(newRoom.id, token)
-```
+> Postman WebSocket tab не подходит для STOMP — он не добавляет обязательный `\0` в конце фреймов. Используй `stomp-test.html`.
 
 ---
 
 ## Обработка ошибок
 
-Все ошибки возвращаются в едином формате:
-
 ```json
-{
-  "message": "Описание ошибки",
-  "status": 400
-}
-```
-
-Рекомендуемая обработка:
-
-```kotlin
-data class ApiError(
-    val message: String,
-    val status: Int
-)
-
-// В Retrofit interceptor или ViewModel:
-try {
-    api.joinRoom(roomId, token)
-} catch (e: HttpException) {
-    val error = gson.fromJson(e.response()?.errorBody()?.string(), ApiError::class.java)
-    when (e.code()) {
-        400 -> showError(error.message) // уже в комнате / другие бизнес-ошибки
-        401 -> refreshTokenOrLogout()
-        404 -> showError("Комната не найдена")
-    }
-}
-```
-
----
-
-## Полная Retrofit-спецификация
-
-```kotlin
-interface SyncRoomApi {
-
-    // Auth (без изменений)
-    @POST("/api/auth/login")
-    suspend fun login(@Body body: LoginRequest): AuthResponse
-
-    @POST("/api/auth/register")
-    suspend fun register(@Body body: RegisterRequest): AuthResponse
-
-    @POST("/api/auth/oauth")
-    suspend fun loginWithOAuth(@Body body: OAuthRequest): AuthResponse
-
-    @POST("/api/auth/refresh")
-    suspend fun refreshToken(@Body body: RefreshRequest): AuthResponse
-
-    // Points
-    @GET("/api/users/{userId}/points")
-    suspend fun getPoints(
-        @Path("userId") userId: String,
-        @Header("Authorization") token: String
-    ): List<PointResponse>
-
-    @POST("/api/users/{userId}/points")
-    suspend fun createPoint(
-        @Path("userId") userId: String,
-        @Header("Authorization") token: String,
-        @Body body: CreatePointRequest
-    ): PointResponse
-
-    @PUT("/api/users/{userId}/points/{pointId}")
-    suspend fun updatePoint(
-        @Path("userId") userId: String,
-        @Path("pointId") pointId: String,
-        @Header("Authorization") token: String,
-        @Body body: CreatePointRequest
-    ): PointResponse
-
-    @DELETE("/api/users/{userId}/points/{pointId}")
-    suspend fun deletePoint(
-        @Path("userId") userId: String,
-        @Path("pointId") pointId: String,
-        @Header("Authorization") token: String
-    ): Unit
-
-    // Rooms
-    @GET("/api/rooms")
-    suspend fun getAllRooms(
-        @Header("Authorization") token: String
-    ): List<RoomResponse>
-
-    @GET("/api/rooms/my")
-    suspend fun getMyRooms(
-        @Header("Authorization") token: String
-    ): List<RoomResponse>
-
-    @POST("/api/rooms/{roomId}/join")
-    suspend fun joinRoom(
-        @Path("roomId") roomId: String,
-        @Header("Authorization") token: String
-    ): Unit
-
-    @POST("/api/rooms/{roomId}/leave")
-    suspend fun leaveRoom(
-        @Path("roomId") roomId: String,
-        @Header("Authorization") token: String
-    ): Unit
-}
-
-// Data classes
-data class PointResponse(
-    val id: String,
-    val userId: String,
-    val context: String,
-    val title: String,
-    val address: String,
-    val latitude: Double,
-    val longitude: Double
-)
-
-data class CreatePointRequest(
-    val context: String,
-    val title: String,
-    val address: String,
-    val latitude: Double,
-    val longitude: Double
-)
-
-data class RoomResponse(
-    val id: String,
-    val context: String,
-    val title: String,
-    val participantCount: Int,
-    val maxParticipants: Int,
-    @SerializedName("isActive") val isActive: Boolean  // важно: именно isActive
-)
+{ "message": "Описание ошибки", "status": 400 }
 ```

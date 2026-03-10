@@ -38,6 +38,9 @@ public class SecurityConfig {
                         .requestMatchers("/api/auth/email").permitAll()
                         .requestMatchers("/api/auth/register").permitAll()
                         .requestMatchers("/api/auth/refresh").permitAll()
+                        // WebSocket handshake — auth happens inside ChannelInterceptor
+                        .requestMatchers("/ws/**").permitAll()
+                        .requestMatchers("/ws-stomp/**").permitAll()
                         // All other endpoints require authentication
                         .anyRequest().authenticated()
                 )
