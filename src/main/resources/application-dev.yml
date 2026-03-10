@@ -4,8 +4,13 @@ spring:
     username: ${DB_USERNAME:syncroom}
     password: ${DB_PASSWORD:syncroom}
     driver-class-name: org.postgresql.Driver
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
 
 jwt:
   secret: ${JWT_SECRET:your-256-bit-secret-key-change-in-production-minimum-32-characters}
   access-token-expiration: ${JWT_ACCESS_EXPIRATION:900000} # 15 minutes in milliseconds
   refresh-token-expiration: ${JWT_REFRESH_EXPIRATION:2592000000} # 30 days in milliseconds
+

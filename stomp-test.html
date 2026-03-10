@@ -4,102 +4,209 @@
   <meta charset="UTF-8">
   <title>SyncRoom WebSocket Tester</title>
   <style>
-    body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 20px; }
-    input, textarea { width: 100%; box-sizing: border-box; background: #313244; color: #cdd6f4;
-                      border: 1px solid #45475a; padding: 8px; border-radius: 4px; margin-bottom: 8px; }
-    button { background: #89b4fa; color: #1e1e2e; border: none; padding: 8px 16px;
-             border-radius: 4px; cursor: pointer; margin-right: 8px; font-weight: bold; }
-    button:hover { background: #74c7ec; }
-    button.danger { background: #f38ba8; }
-    #log { background: #181825; border: 1px solid #45475a; padding: 12px; height: 400px;
-           overflow-y: auto; border-radius: 4px; }
-    .in  { color: #a6e3a1; } /* green = received */
-    .out { color: #fab387; } /* orange = sent */
-    .info{ color: #89dceb; } /* cyan = system */
-    .err { color: #f38ba8; } /* red = error */
-    .ts  { color: #6c7086; font-size: 11px; }
-    h3   { color: #89b4fa; margin-top: 20px; }
+    * { box-sizing: border-box; }
+    body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 20px; max-width: 900px; margin: 0 auto; }
+    input  { width: 100%; background: #313244; color: #cdd6f4; border: 1px solid #45475a;
+             padding: 8px; border-radius: 4px; margin-bottom: 6px; }
+    button { background: #89b4fa; color: #1e1e2e; border: none; padding: 7px 14px;
+             border-radius: 4px; cursor: pointer; margin-right: 6px; margin-bottom: 6px; font-weight: bold; font-family: monospace; }
+    button:hover   { filter: brightness(1.15); }
+    button.red     { background: #f38ba8; }
+    button.green   { background: #a6e3a1; }
+    button.yellow  { background: #f9e2af; }
+    button.sm      { font-size: 11px; padding: 4px 8px; }
+    #log { background: #181825; border: 1px solid #45475a; padding: 12px; height: 380px;
+           overflow-y: auto; border-radius: 4px; white-space: pre-wrap; word-break: break-all; }
+    .in   { color: #a6e3a1; }
+    .out  { color: #fab387; }
+    .info { color: #89dceb; }
+    .err  { color: #f38ba8; }
+    .ts   { color: #6c7086; font-size: 11px; }
+    h3    { color: #89b4fa; margin: 18px 0 6px; border-bottom: 1px solid #313244; padding-bottom: 4px; }
+    .row  { display: flex; gap: 8px; align-items: flex-start; }
+    .row input { margin-bottom: 0; }
+    label { font-size: 12px; color: #6c7086; display: block; margin-bottom: 2px; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   </style>
 </head>
 <body>
   <h2>🔌 SyncRoom STOMP Tester</h2>
 
-  <h3>1. Токен (из POST /api/auth/email или /oauth)</h3>
+  <!-- ─── ТОКЕН ─────────────────────────────────────────────────────────── -->
+  <h3>1. JWT-токен</h3>
+  <label>POST /api/auth/email → accessToken</label>
   <input id="token" type="text" placeholder="eyJhbGci..." />
 
+  <!-- ─── ПОДКЛЮЧЕНИЕ ───────────────────────────────────────────────────── -->
   <h3>2. Подключение</h3>
-  <button onclick="connect()">Connect</button>
-  <button class="danger" onclick="disconnect()">Disconnect</button>
+  <button onclick="connect()">⚡ Connect</button>
+  <button class="red" onclick="disconnect()">✖ Disconnect</button>
 
-  <h3>3. Подписка на комнату</h3>
-  <input id="roomId" type="text" placeholder="UUID комнаты (из GET /api/rooms)" />
-  <button onclick="subscribe()">Subscribe to /topic/room/{roomId}</button>
+  <!-- ─── КОМНАТА ───────────────────────────────────────────────────────── -->
+  <h3>3. Комната</h3>
+  <div class="row">
+    <div style="flex:1">
+      <label>Room ID</label>
+      <input id="roomId" placeholder="UUID из GET /api/rooms" />
+    </div>
+    <div style="padding-top:18px">
+      <button onclick="loadRooms()">📋 GET /api/rooms</button>
+      <button class="green"  onclick="joinRoom()">POST /join</button>
+      <button class="red"    onclick="leaveRoom()">POST /leave</button>
+      <button onclick="subRoom()">👂 Subscribe участники</button>
+    </div>
+  </div>
 
-  <h3>4. Лог событий</h3>
+  <!-- ─── МЕСТА ─────────────────────────────────────────────────────────── -->
+  <h3>4. Места (Seats)</h3>
+  <div class="grid2">
+    <div>
+      <label>Room ID (для /seats топика)</label>
+      <input id="seatRoomId" placeholder="UUID комнаты (= поле выше)" />
+    </div>
+    <div>
+      <label>Seat ID</label>
+      <input id="seatId" placeholder="UUID места (авто из GET /api/rooms)" />
+    </div>
+  </div>
+  <button onclick="subSeats()">👂 Subscribe /seats</button>
+  <button class="green"  onclick="sit()">🪑 POST /sit</button>
+  <button class="yellow" onclick="standUp()">🚶 POST /leave seat</button>
+
+  <!-- ─── ЛОГ ───────────────────────────────────────────────────────────── -->
+  <h3>5. Лог</h3>
+  <button class="sm" onclick="clearLog()">Очистить</button>
   <div id="log"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
   <script>
-    let client = null;
-    let subscription = null;
+    let stompClient = null;
+    let roomSub = null;
+    let seatSub = null;
+
+    /* ── helpers ─────────────────────────────────────────────────── */
+    const $ = id => document.getElementById(id);
+    const tok  = () => $('token').value.trim();
+    const rid  = () => $('roomId').value.trim();
+    const srid = () => $('seatRoomId').value.trim() || rid();
+    const sid  = () => $('seatId').value.trim();
 
     function log(msg, cls = 'info') {
-      const el = document.getElementById('log');
-      const ts = new Date().toLocaleTimeString('ru', {hour12: false, fractionalSecondDigits: 3});
-      el.innerHTML += `<div><span class="ts">[${ts}]</span> <span class="${cls}">${escHtml(msg)}</span></div>`;
+      const el = $('log');
+      const ts = new Date().toLocaleTimeString('ru', {hour12:false, fractionalSecondDigits:3});
+      el.innerHTML += `<div><span class="ts">[${ts}]</span> <span class="${cls}">${esc(msg)}</span></div>`;
       el.scrollTop = el.scrollHeight;
     }
+    function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+    function clearLog() { $('log').innerHTML = ''; }
 
-    function escHtml(s) {
-      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    }
-
+    /* ── STOMP ───────────────────────────────────────────────────── */
     function connect() {
-      const token = document.getElementById('token').value.trim();
-      if (!token) { log('⚠️ Введи токен!', 'err'); return; }
-
-      // Native WebSocket endpoint (no SockJS)
+      if (!tok()) { log('⚠️ Введи токен', 'err'); return; }
       const socket = new WebSocket('ws://localhost:8080/ws-stomp');
-      client = Stomp.over(socket);
-      client.debug = (msg) => log('DBG: ' + msg, 'info');
-
-      const headers = { 'Authorization': 'Bearer ' + token };
-
-      client.connect(headers,
-        function onConnect(frame) {
-          log('✅ CONNECTED: ' + frame, 'in');
-        },
-        function onError(err) {
-          log('❌ ERROR: ' + err, 'err');
-        }
+      stompClient = Stomp.over(socket);
+      stompClient.debug = msg => { if (msg.includes('ERROR')) log('DBG: '+msg, 'err'); };
+      stompClient.connect({'Authorization': 'Bearer '+tok()},
+        () => log('✅ CONNECTED', 'in'),
+        e  => log('❌ STOMP error: '+e, 'err')
       );
-      log('⏳ Connecting to ws://localhost:8080/ws-stomp ...', 'out');
-    }
-
-    function subscribe() {
-      if (!client || !client.connected) { log('⚠️ Сначала подключись!', 'err'); return; }
-      const roomId = document.getElementById('roomId').value.trim();
-      if (!roomId) { log('⚠️ Введи roomId!', 'err'); return; }
-
-      const dest = '/topic/room/' + roomId;
-      if (subscription) subscription.unsubscribe();
-
-      subscription = client.subscribe(dest, function(frame) {
-        try {
-          const event = JSON.parse(frame.body);
-          log('📨 EVENT [' + event.type + ']: ' + JSON.stringify(event.payload, null, 2), 'in');
-        } catch(e) {
-          log('📨 RAW: ' + frame.body, 'in');
-        }
-      });
-
-      log('👂 Subscribed to ' + dest, 'out');
-      log('Теперь вызови POST /api/rooms/' + roomId + '/join или /leave — придёт событие', 'info');
+      log('⏳ Connecting to ws://localhost:8080/ws-stomp...', 'out');
     }
 
     function disconnect() {
-      if (client) { client.disconnect(() => log('🔌 Disconnected', 'info')); }
+      if (stompClient) stompClient.disconnect(() => log('🔌 Disconnected', 'info'));
+    }
+
+    function subRoom() {
+      if (!chk()) return;
+      if (!rid()) { log('⚠️ Введи roomId', 'err'); return; }
+      if (roomSub) roomSub.unsubscribe();
+      const dest = '/topic/room/'+rid();
+      roomSub = stompClient.subscribe(dest, frame => {
+        const e = parseEvent(frame.body);
+        log('👥 ['+e.type+'] '+JSON.stringify(e.payload, null, 2), 'in');
+      });
+      log('👂 Subscribed: '+dest, 'out');
+    }
+
+    function subSeats() {
+      if (!chk()) return;
+      const r = srid();
+      if (!r) { log('⚠️ Введи Room ID', 'err'); return; }
+      if (seatSub) seatSub.unsubscribe();
+      const dest = '/topic/room/'+r+'/seats';
+      seatSub = stompClient.subscribe(dest, frame => {
+        const e = parseEvent(frame.body);
+        log('🪑 ['+e.type+'] '+JSON.stringify(e.payload, null, 2), 'in');
+        // auto-fill seatId on SEAT_TAKEN
+        if (e.type === 'SEAT_TAKEN' && e.payload?.seatId)
+          $('seatId').value = e.payload.seatId;
+      });
+      log('👂 Subscribed: '+dest, 'out');
+      log('Нажми /sit чтобы увидеть SEAT_TAKEN. /leave seat чтобы SEAT_LEFT.', 'info');
+    }
+
+    function parseEvent(body) {
+      try { return JSON.parse(body); } catch(_) { return { type: 'RAW', payload: body }; }
+    }
+
+    function chk() {
+      if (!stompClient || !stompClient.connected) { log('⚠️ Сначала подключись (Connect)', 'err'); return false; }
+      return true;
+    }
+
+    /* ── REST ────────────────────────────────────────────────────── */
+    function api(method, url) {
+      log(`➡️ ${method} ${url}`, 'out');
+      return fetch('http://localhost:8080'+url, {
+        method,
+        headers: {
+          'Authorization': 'Bearer '+tok(),
+          'Content-Type': 'application/json'
+        }
+      }).then(async r => {
+        let txt = await r.text();
+        try { txt = JSON.stringify(JSON.parse(txt), null, 2); } catch(_) {}
+        log(`← ${r.status}: ${txt}`, r.ok ? 'in' : 'err');
+        return { ok: r.ok, text: txt };
+      }).catch(e => log('❌ '+e, 'err'));
+    }
+
+    function loadRooms() {
+      api('GET', '/api/rooms').then(r => {
+        if (!r?.ok) return;
+        try {
+          const rooms = JSON.parse(r.text);
+          rooms.forEach(rm => {
+            const free = rm.seats?.filter(s => !s.occupiedBy);
+            log(`🏠 ${rm.title} [${rm.id}] участников:${rm.participantCount}/${rm.maxParticipants} мест свободно:${free?.length??'?'}`, 'info');
+          });
+          // auto-fill first room + first free seat
+          if (rooms.length > 0) {
+            $('roomId').value = rooms[0].id;
+            $('seatRoomId').value = rooms[0].id;
+            const free = rooms[0].seats?.find(s => !s.occupiedBy);
+            if (free) {
+              $('seatId').value = free.id;
+              log(`✅ Авто: roomId=${rooms[0].id} seatId=${free.id}`, 'in');
+            }
+          }
+        } catch(_) {}
+      });
+    }
+
+    function joinRoom()  { if (!rid()) { log('⚠️ Введи roomId', 'err'); return; } api('POST', '/api/rooms/'+rid()+'/join'); }
+    function leaveRoom() { if (!rid()) { log('⚠️ Введи roomId', 'err'); return; } api('POST', '/api/rooms/'+rid()+'/leave'); }
+
+    function sit() {
+      if (!srid() || !sid()) { log('⚠️ Нужны Room ID и Seat ID (нажми GET /api/rooms)', 'err'); return; }
+      api('POST', `/api/rooms/${srid()}/seats/${sid()}/sit`);
+    }
+
+    function standUp() {
+      if (!srid() || !sid()) { log('⚠️ Нужны Room ID и Seat ID', 'err'); return; }
+      api('POST', `/api/rooms/${srid()}/seats/${sid()}/leave`);
     }
   </script>
 </body>

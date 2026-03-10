@@ -12,8 +12,10 @@ import ru.syncroom.rooms.domain.RoomParticipant;
 import ru.syncroom.rooms.dto.JoinRoomResponse;
 import ru.syncroom.rooms.dto.ParticipantResponse;
 import ru.syncroom.rooms.dto.RoomResponse;
+import ru.syncroom.rooms.dto.SeatDto;
 import ru.syncroom.rooms.repository.RoomParticipantRepository;
 import ru.syncroom.rooms.repository.RoomRepository;
+import ru.syncroom.rooms.repository.SeatRepository;
 import ru.syncroom.rooms.ws.RoomEvent;
 import ru.syncroom.rooms.ws.RoomEventType;
 import ru.syncroom.users.domain.User;
@@ -30,6 +32,8 @@ public class RoomService {
     private final RoomRepository roomRepository;
     private final RoomParticipantRepository participantRepository;
     private final UserRepository userRepository;
+    private final SeatRepository seatRepository;
+    private final SeatService seatService;
     private final SimpMessagingTemplate messagingTemplate;
 
     // ─── Helpers ────────────────────────────────────────────────────────────
@@ -45,8 +49,7 @@ public class RoomService {
     // ─── Public API ─────────────────────────────────────────────────────────
 
     /**
-     * Returns all rooms with current participant count.
-     * isActive is recalculated dynamically and synced to DB if out of date.
+     * Returns all rooms with current participant count and seat state.
      */
     @Transactional
     public List<RoomResponse> getAllRooms() {
@@ -56,26 +59,20 @@ public class RoomService {
             int count = participantRepository.countByRoomId(room.getId());
             boolean active = count < room.getMaxParticipants();
 
-            // Sync the flag in DB if it has drifted
             if (room.getIsActive() != active) {
                 room.setIsActive(active);
                 roomRepository.save(room);
             }
 
-            return RoomResponse.from(room, count);
+            List<SeatDto> seats = seatRepository.findByRoomId(room.getId())
+                    .stream().map(SeatDto::from).toList();
+            return RoomResponse.from(room, count, seats);
         }).toList();
     }
 
     /**
-     * Join a room.
-     *
-     * Business rules:
-     * - User may only be in one room at a time.
-     * - If the room is full after joining (or was already full), it is marked
-     *   isActive=false and a new duplicate room is created.
-     *
-     * Returns: JoinRoomResponse { room, participants[] }
-     * Broadcasts: PARTICIPANT_JOINED to /topic/room/{roomId}
+     * Join a room. Returns full room state (with seats) + current participant list.
+     * Broadcasts PARTICIPANT_JOINED.
      */
     @Transactional
     public JoinRoomResponse joinRoom(UUID roomId, UUID userId) {
@@ -85,7 +82,7 @@ public class RoomService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new NotFoundException("User not found"));
 
-        // One room at a time: check if the user is already anywhere
+        // One room at a time
         List<RoomParticipant> existing = participantRepository.findByUserId(userId);
         if (!existing.isEmpty()) {
             throw new BadRequestException(
@@ -94,10 +91,9 @@ public class RoomService {
         }
 
         int currentCount = participantRepository.countByRoomId(roomId);
-        UUID actualRoomId;   // the room the user actually ends up in
+        UUID actualRoomId;
 
         if (currentCount >= room.getMaxParticipants()) {
-            // Room is already full — close it and create a duplicate
             room.setIsActive(false);
             roomRepository.save(room);
 
@@ -105,24 +101,17 @@ public class RoomService {
                     .context(room.getContext())
                     .title(room.getTitle())
                     .maxParticipants(room.getMaxParticipants())
+                    .backgroundPicture(room.getBackgroundPicture())
                     .isActive(true)
                     .build());
 
             participantRepository.save(RoomParticipant.builder()
-                    .room(newRoom)
-                    .user(user)
-                    .build());
-
+                    .room(newRoom).user(user).build());
             actualRoomId = newRoom.getId();
-
         } else {
-            // There is space — add the user to the original room
             participantRepository.save(RoomParticipant.builder()
-                    .room(room)
-                    .user(user)
-                    .build());
+                    .room(room).user(user).build());
 
-            // If room just filled up, close it and open a duplicate
             if (currentCount + 1 >= room.getMaxParticipants()) {
                 room.setIsActive(false);
                 roomRepository.save(room);
@@ -131,43 +120,39 @@ public class RoomService {
                         .context(room.getContext())
                         .title(room.getTitle())
                         .maxParticipants(room.getMaxParticipants())
+                        .backgroundPicture(room.getBackgroundPicture())
                         .isActive(true)
                         .build());
             }
-
             actualRoomId = room.getId();
         }
 
-        // Reload the actual room the user was placed in
         Room actualRoom = roomRepository.findById(actualRoomId).orElseThrow();
         List<RoomParticipant> allParticipants = participantRepository.findByRoomId(actualRoomId);
         int participantCount = allParticipants.size();
 
-        // Build the participant DTO for this user only (for the WS event payload)
         RoomParticipant myParticipation = participantRepository
                 .findByRoomIdAndUserId(actualRoomId, userId).orElseThrow();
         ParticipantResponse myDto = ParticipantResponse.from(myParticipation);
 
-        // Broadcast PARTICIPANT_JOINED to everyone already in the room
         publish(actualRoomId, RoomEventType.PARTICIPANT_JOINED, myDto);
 
-        // Build and return the REST response
         List<ParticipantResponse> participantDtos = allParticipants.stream()
-                .map(ParticipantResponse::from)
-                .toList();
+                .map(ParticipantResponse::from).toList();
+
+        List<SeatDto> seats = seatRepository.findByRoomId(actualRoomId)
+                .stream().map(SeatDto::from).toList();
 
         return JoinRoomResponse.builder()
-                .room(RoomResponse.from(actualRoom, participantCount))
+                .room(RoomResponse.from(actualRoom, participantCount, seats))
                 .participants(participantDtos)
                 .build();
     }
 
     /**
      * Leave a room.
-     *
-     * - Removes the user from room_participants.
-     * - If the room was full and now has space, it becomes active again.
-     * - Broadcasts PARTICIPANT_LEFT to /topic/room/{roomId}.
+     * Auto-releases any seat the user occupies (sends SEAT_LEFT WS event).
+     * Broadcasts PARTICIPANT_LEFT.
      */
     @Transactional
     public void leaveRoom(UUID roomId, UUID userId) {
@@ -181,9 +166,11 @@ public class RoomService {
             throw new BadRequestException("User is not a member of this room");
         }
 
+        // Auto-release seat before removing from room (sends SEAT_LEFT WS event)
+        seatService.releaseUserSeat(roomId, userId);
+
         participantRepository.deleteByRoomIdAndUserId(roomId, userId);
 
-        // Re-check whether the room should be re-opened
         int countAfter = participantRepository.countByRoomId(roomId);
         boolean shouldBeActive = countAfter < room.getMaxParticipants();
         if (room.getIsActive() != shouldBeActive) {
@@ -191,7 +178,6 @@ public class RoomService {
             roomRepository.save(room);
         }
 
-        // Broadcast PARTICIPANT_LEFT — payload contains basic user info
         ParticipantResponse leavingUser = ParticipantResponse.builder()
                 .userId(user.getId().toString())
                 .name(user.getName())
@@ -201,7 +187,7 @@ public class RoomService {
     }
 
     /**
-     * Returns all rooms that the user is currently a member of.
+     * Returns all rooms that the user is currently a member of (including seat state).
      */
     @Transactional(readOnly = true)
     public List<RoomResponse> getUserRooms(UUID userId) {
@@ -210,7 +196,9 @@ public class RoomService {
         return participations.stream().map(p -> {
             Room room = p.getRoom();
             int count = participantRepository.countByRoomId(room.getId());
-            return RoomResponse.from(room, count);
+            List<SeatDto> seats = seatRepository.findByRoomId(room.getId())
+                    .stream().map(SeatDto::from).toList();
+            return RoomResponse.from(room, count, seats);
         }).toList();
     }
 }

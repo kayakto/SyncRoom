@@ -5,9 +5,10 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.annotation.Transactional;
 import ru.syncroom.rooms.domain.Room;
 import ru.syncroom.rooms.domain.RoomParticipant;
@@ -52,8 +53,12 @@ class RoomServiceWebSocketTest {
     private RoomParticipantRepository participantRepository;
 
     /** Mock the messaging template — no real STOMP broker needed in tests */
-    @MockBean
+    @MockitoBean
     private SimpMessagingTemplate messagingTemplate;
+
+    /** Mock Redis — no live Redis needed in tests */
+    @MockitoBean
+    private StringRedisTemplate stringRedisTemplate;
 
     private User testUser;
     private Room testRoom;

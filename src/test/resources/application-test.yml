@@ -13,6 +13,10 @@ spring:
   h2:
     console:
       enabled: true
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration
 
 jwt:
   secret: test-secret-key-for-jwt-token-generation-in-tests-minimum-32-chars
@@ -23,3 +27,4 @@ logging:
   level:
     root: WARN
     ru.syncroom: DEBUG
+

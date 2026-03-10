@@ -86,6 +86,26 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(error);
     }
 
+    @ExceptionHandler(ru.syncroom.rooms.service.SeatService.SeatConflictException.class)
+    public ResponseEntity<ErrorResponse> handleSeatConflict(ru.syncroom.rooms.service.SeatService.SeatConflictException ex) {
+        log.debug("Seat conflict: {}", ex.getMessage());
+        ErrorResponse error = ErrorResponse.builder()
+                .message(ex.getMessage())
+                .status(HttpStatus.CONFLICT.value())
+                .build();
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(error);
+    }
+
+    @ExceptionHandler(ru.syncroom.rooms.service.SeatService.SeatForbiddenException.class)
+    public ResponseEntity<ErrorResponse> handleSeatForbidden(ru.syncroom.rooms.service.SeatService.SeatForbiddenException ex) {
+        log.debug("Seat forbidden: {}", ex.getMessage());
+        ErrorResponse error = ErrorResponse.builder()
+                .message(ex.getMessage())
+                .status(HttpStatus.FORBIDDEN.value())
+                .build();
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(error);
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleGenericException(Exception ex) {
         log.error("Unexpected error", ex);
