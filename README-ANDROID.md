@@ -34,7 +34,7 @@
   - `POST /api/rooms/{roomId}/seats/{seatId}/leave`
   - Топик `/topic/room/{roomId}/seats` с событиями `SEAT_TAKEN` / `SEAT_LEFT`.
 
-Ниже — только то, что добавилось: **проектор**.
+Ниже подробно описаны **проектор**, **помодоро** и **учебные таски**.
 
 ---
 
@@ -413,6 +413,271 @@ fun sendProjectorControl(roomId: String, action: String, positionMs: Long) {
    - для STREAM — скопировать `rtmpUrl` в OBS и посмотреть `STREAM_LIVE` / `STREAM_OFFLINE`.
 
 Эти же события и структуры данных вы будете использовать на Android.
+
+---
+
+## 6. Помодоро-таймер для учебных комнат
+
+### 6.1. REST API
+
+```text
+GET    /api/rooms/{roomId}/pomodoro
+POST   /api/rooms/{roomId}/pomodoro/start
+POST   /api/rooms/{roomId}/pomodoro/pause
+POST   /api/rooms/{roomId}/pomodoro/resume
+POST   /api/rooms/{roomId}/pomodoro/skip
+DELETE /api/rooms/{roomId}/pomodoro
+```
+
+- Доступно только для комнат с `context = "study"`.
+- Любой участник комнаты может запускать/останавливать таймер.
+
+**Старт помодоро:**
+
+```http
+POST /api/rooms/{roomId}/pomodoro/start
+Content-Type: application/json
+
+{
+  "workDuration": 1500,
+  "breakDuration": 300,
+  "longBreakDuration": 900,
+  "roundsTotal": 4
+}
+```
+
+Если тело пустое — используются значения по умолчанию (25/5/15/4).
+
+**Ответ `PomodoroResponse`:**
+
+```json
+{
+  "id": "uuid",
+  "roomId": "uuid",
+  "startedBy": { "id": "user-uuid", "name": "Аня", "avatarUrl": "https://..." },
+  "phase": "WORK",
+  "currentRound": 1,
+  "roundsTotal": 4,
+  "phaseEndAt": "2026-03-18T12:25:00Z",
+  "workDuration": 1500,
+  "breakDuration": 300,
+  "longBreakDuration": 900
+}
+```
+
+### 6.2. WebSocket события помодоро
+
+Подписка:
+
+```text
+SUBSCRIBE
+destination:/topic/room/{roomId}/pomodoro
+id:sub-pomodoro
+```
+
+События (формат как у остальных WS-событий):
+
+- `POMODORO_STARTED` — отправляется после `start`;
+- `POMODORO_PHASE_CHANGED` — автоматический или ручной переход фазы (WORK/BREAK/LONG_BREAK);
+- `POMODORO_PAUSED` — `{ "phase": "PAUSED", "remainingSeconds": N }`;
+- `POMODORO_RESUMED` — `{ "phase": "...", "phaseEndAt": "..." }`;
+- `POMODORO_STOPPED` — таймер остановлен или цикл завершён.
+
+```json
+{
+  "type": "POMODORO_PAUSED",
+  "payload": {
+    "phase": "PAUSED",
+    "remainingSeconds": 847
+  },
+  "timestamp": "2026-03-18T12:10:53Z"
+}
+```
+
+### 6.3. Kotlin-модели для помодоро
+
+```kotlin
+@Serializable
+data class PomodoroResponse(
+    val id: String,
+    val roomId: String,
+    val startedBy: ProjectorUserDto,
+    val phase: String,           // WORK, BREAK, LONG_BREAK, PAUSED, FINISHED
+    val currentRound: Int,
+    val roundsTotal: Int,
+    val phaseEndAt: String?,     // ISO 8601, null если PAUSED/FINISHED
+    val workDuration: Int,
+    val breakDuration: Int,
+    val longBreakDuration: Int
+)
+
+@Serializable
+data class PomodoroStartRequest(
+    val workDuration: Int? = null,
+    val breakDuration: Int? = null,
+    val longBreakDuration: Int? = null,
+    val roundsTotal: Int? = null
+)
+
+@Serializable
+data class PomodoroEventEnvelope(
+    val type: String,
+    val payload: JsonObject,
+    val timestamp: String
+)
+```
+
+Расширение Retrofit-интерфейса:
+
+```kotlin
+interface SyncRoomApi {
+    // ...
+
+    @GET("/api/rooms/{roomId}/pomodoro")
+    suspend fun getPomodoro(
+        @Path("roomId") roomId: String,
+        @Header("Authorization") token: String
+    ): PomodoroResponse
+
+    @POST("/api/rooms/{roomId}/pomodoro/start")
+    suspend fun startPomodoro(
+        @Path("roomId") roomId: String,
+        @Header("Authorization") token: String,
+        @Body body: PomodoroStartRequest
+    ): PomodoroResponse
+
+    @POST("/api/rooms/{roomId}/pomodoro/pause")
+    suspend fun pausePomodoro(
+        @Path("roomId") roomId: String,
+        @Header("Authorization") token: String
+    ): PomodoroResponse
+
+    @POST("/api/rooms/{roomId}/pomodoro/resume")
+    suspend fun resumePomodoro(
+        @Path("roomId") roomId: String,
+        @Header("Authorization") token: String
+    ): PomodoroResponse
+
+    @POST("/api/rooms/{roomId}/pomodoro/skip")
+    suspend fun skipPomodoro(
+        @Path("roomId") roomId: String,
+        @Header("Authorization") token: String
+    ): PomodoroResponse
+
+    @DELETE("/api/rooms/{roomId}/pomodoro")
+    suspend fun stopPomodoro(
+        @Path("roomId") roomId: String,
+        @Header("Authorization") token: String
+    )
+}
+```
+
+---
+
+## 7. Учебные таски (Study Tasks)
+
+### 7.1. REST API
+
+```text
+GET    /api/rooms/{roomId}/tasks
+POST   /api/rooms/{roomId}/tasks
+PUT    /api/rooms/{roomId}/tasks/{taskId}
+DELETE /api/rooms/{roomId}/tasks/{taskId}
+```
+
+- Возвращаются только таски **текущего пользователя** в комнате.
+- `sortOrder` определяет порядок показа.
+
+**Примеры:**
+
+```json
+GET /api/rooms/{roomId}/tasks
+[
+  { "id": "uuid", "text": "Прочитать главу 5", "isDone": false, "sortOrder": 0 },
+  { "id": "uuid", "text": "Сделать конспект", "isDone": true, "sortOrder": 1 }
+]
+```
+
+```json
+POST /api/rooms/{roomId}/tasks
+{ "text": "Прочитать главу 5" }
+```
+
+```json
+PUT /api/rooms/{roomId}/tasks/{taskId}
+{ "text": "Прочитать главу 5 и 6", "isDone": true, "sortOrder": 0 }
+```
+
+### 7.2. Kotlin-модели тасков
+
+```kotlin
+@Serializable
+data class StudyTaskResponse(
+    val id: String,
+    val text: String,
+    @SerialName("isDone") val isDone: Boolean,
+    val sortOrder: Int
+)
+
+@Serializable
+data class CreateTaskRequest(val text: String)
+
+@Serializable
+data class UpdateTaskRequest(
+    val text: String? = null,
+    val isDone: Boolean? = null,
+    val sortOrder: Int? = null
+)
+```
+
+Расширение Retrofit:
+
+```kotlin
+interface SyncRoomApi {
+    // ...
+
+    @GET("/api/rooms/{roomId}/tasks")
+    suspend fun getTasks(
+        @Path("roomId") roomId: String,
+        @Header("Authorization") token: String
+    ): List<StudyTaskResponse>
+
+    @POST("/api/rooms/{roomId}/tasks")
+    suspend fun createTask(
+        @Path("roomId") roomId: String,
+        @Header("Authorization") token: String,
+        @Body body: CreateTaskRequest
+    ): StudyTaskResponse
+
+    @PUT("/api/rooms/{roomId}/tasks/{taskId}")
+    suspend fun updateTask(
+        @Path("roomId") roomId: String,
+        @Path("taskId") taskId: String,
+        @Header("Authorization") token: String,
+        @Body body: UpdateTaskRequest
+    ): StudyTaskResponse
+
+    @DELETE("/api/rooms/{roomId}/tasks/{taskId}")
+    suspend fun deleteTask(
+        @Path("roomId") roomId: String,
+        @Path("taskId") taskId: String,
+        @Header("Authorization") token: String
+    )
+}
+```
+
+---
+
+## 8. Практика для Android-разработчика (помодоро + таски)
+
+- **Помодоро:**
+  - при заходе в `study`-комнату можно показать кнопку «Запустить таймер» → `startPomodoro`;
+  - подписаться на `/topic/room/{roomId}/pomodoro` и обновлять UI по событиям `POMODORO_STARTED`, `POMODORO_PHASE_CHANGED`, `POMODORO_PAUSED`, `POMODORO_RESUMED`, `POMODORO_STOPPED`;
+  - локальный отсчёт таймера привязывать к `phaseEndAt`.
+- **Учебные таски:**
+  - на экране комнаты показывать список из `GET /tasks` для текущего пользователя;
+  - создание/изменение/удаление тасков делается чисто через REST, без WebSocket;
+  - `sortOrder` можно использовать для drag & drop сортировки (при перестановке пересчитывать и отправлять `UpdateTaskRequest` с новыми значениями).
 
 # SyncRoom — Документация для Android разработчика
 

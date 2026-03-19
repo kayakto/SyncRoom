@@ -139,6 +139,81 @@ APP_PORT=8080
 - Включить проектор может любой участник комнаты; при этом хостом становится он, старая сессия затирается.
 - Выключить (`DELETE`) и управлять воспроизведением (play/pause/seek) может только текущий хост.
 
+### Pomodoro — общий таймер для учебных комнат
+
+| Метод | URL | Описание |
+|-------|-----|----------|
+| GET | `/api/rooms/{roomId}/pomodoro` | Текущее состояние помодоро-таймера |
+| POST | `/api/rooms/{roomId}/pomodoro/start` | Запустить помодоро (только `context="study"`) |
+| POST | `/api/rooms/{roomId}/pomodoro/pause` | Поставить таймер на паузу |
+| POST | `/api/rooms/{roomId}/pomodoro/resume` | Продолжить после паузы |
+| POST | `/api/rooms/{roomId}/pomodoro/skip` | Пропустить текущую фазу (WORK/BREAK/LONG_BREAK) |
+| DELETE | `/api/rooms/{roomId}/pomodoro` | Остановить и удалить таймер |
+
+**Старт помодоро:**
+
+```json
+POST /api/rooms/{roomId}/pomodoro/start
+{
+  "workDuration": 1500,
+  "breakDuration": 300,
+  "longBreakDuration": 900,
+  "roundsTotal": 4
+}
+```
+
+- если тело пустое — используются значения по умолчанию (25/5/15/4);
+- только участники комнаты с `context="study"` могут запускать таймер;
+- в комнате может быть только один активный таймер (UNIQUE room_id).
+
+**Ответ `PomodoroResponse`:**
+
+```json
+{
+  "id": "uuid",
+  "roomId": "uuid",
+  "startedBy": { "id": "user-uuid", "name": "Аня", "avatarUrl": "https://..." },
+  "phase": "WORK",
+  "currentRound": 1,
+  "roundsTotal": 4,
+  "phaseEndAt": "2026-03-18T12:25:00Z",
+  "workDuration": 1500,
+  "breakDuration": 300,
+  "longBreakDuration": 900
+}
+```
+
+### Study Tasks — персональные таски в учебной комнате
+
+| Метод | URL | Описание |
+|-------|-----|----------|
+| GET | `/api/rooms/{roomId}/tasks` | Мои таски в комнате (`sortOrder` по возрастанию) |
+| POST | `/api/rooms/{roomId}/tasks` | Создать таск |
+| PUT | `/api/rooms/{roomId}/tasks/{taskId}` | Обновить таск (partial update) |
+| DELETE | `/api/rooms/{roomId}/tasks/{taskId}` | Удалить таск |
+
+**Создание таска:**
+
+```json
+POST /api/rooms/{roomId}/tasks
+{
+  "text": "Прочитать главу 5"
+}
+```
+
+- `sortOrder` назначается как `MAX(sortOrder) + 1` для пользователя в этой комнате.
+
+**Ответ `TaskResponse`:**
+
+```json
+{
+  "id": "uuid",
+  "text": "Прочитать главу 5",
+  "isDone": false,
+  "sortOrder": 2
+}
+```
+
 ---
 
 ## WebSocket (STOMP)
@@ -163,6 +238,7 @@ Authorization:Bearer <accessToken>
 | `/topic/room/{roomId}` | `PARTICIPANT_JOINED`, `PARTICIPANT_LEFT` |
 | `/topic/room/{roomId}/seats` | `SEAT_TAKEN`, `SEAT_LEFT` ✨ |
 | `/topic/room/{roomId}/projector` | `PROJECTOR_STARTED`, `PROJECTOR_STOPPED`, `PROJECTOR_CONTROL`, `STREAM_LIVE`, `STREAM_OFFLINE` ✨ |
+| `/topic/room/{roomId}/pomodoro` | `POMODORO_STARTED`, `POMODORO_PHASE_CHANGED`, `POMODORO_PAUSED`, `POMODORO_RESUMED`, `POMODORO_STOPPED` ✨ |
 
 ### Управление проектором (STOMP)
 
@@ -266,6 +342,8 @@ V3 — создание points
 V4 — добавление background_picture к rooms
 V5 — создание seats (10 мест на комнату, нормализованные x/y)
 V6 — создание projector_sessions (проектор-стрим)
+V7 — создание pomodoro_sessions и study_tasks
+V8 — добавление полей paused_phase и remaining_seconds к pomodoro_sessions
 ```
 
 ---
@@ -285,7 +363,9 @@ gradle test
 | `RoomServiceWebSocketTest` | WS-события PARTICIPANT_JOINED/LEFT | 14 |
 | `SeatControllerTest` | sit, stand-up, auto-move, 403, 409, 404 | 9 |
 | `ProjectorControllerTest` | REST + SRS callback для проектора | 7 |
-| **Итого** | | **108** |
+| `PomodoroControllerTest` | REST для помодоро | 6 |
+| `StudyTaskControllerTest` | REST для учебных тасков | 4 |
+| **Итого** | | **118** |
 
 Тесты используют H2 in-memory БД, `@MockitoBean SimpMessagingTemplate` (Spring Boot 3.4+), Redis не требуется.
 

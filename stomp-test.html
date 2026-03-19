@@ -113,8 +113,29 @@
   </div>
   <button onclick="projectorControl()">🎛 SEND PROJECTOR_CONTROL (WS)</button>
 
+  <!-- ─── ПОМОДОРО ──────────────────────────────────────────────────────── -->
+  <h3>6. Помодоро (study-комнаты)</h3>
+  <div class="grid2">
+    <div>
+      <label>Room ID (для помодоро)</label>
+      <input id="pomodoroRoomId" placeholder="UUID комнаты (обычно = Room ID выше)" />
+    </div>
+    <div>
+      <label>Work / Break / LongBreak / Rounds</label>
+      <input id="pomodoroConfig" value="1500,300,900,4" placeholder="1500,300,900,4" />
+    </div>
+  </div>
+  <div class="row">
+    <button class="green" onclick="pomodoroStart()">▶ POST /pomodoro/start</button>
+    <button onclick="pomodoroPause()">⏸ POST /pomodoro/pause</button>
+    <button onclick="pomodoroResume()">⏯ POST /pomodoro/resume</button>
+    <button onclick="pomodoroSkip()">⏭ POST /pomodoro/skip</button>
+    <button class="red" onclick="pomodoroStop()">⏹ DELETE /pomodoro</button>
+    <button onclick="subPomodoro()">👂 Subscribe /pomodoro</button>
+  </div>
+
   <!-- ─── ЛОГ ───────────────────────────────────────────────────────────── -->
-  <h3>6. Лог</h3>
+  <h3>7. Лог</h3>
   <button class="sm" onclick="clearLog()">Очистить</button>
   <div id="log"></div>
 
@@ -125,6 +146,7 @@
     let roomSub = null;
     let seatSub = null;
     let projectorSub = null;
+    let pomodoroSub = null;
 
     /* ── helpers ─────────────────────────────────────────────────── */
     const $ = id => document.getElementById(id);
@@ -132,6 +154,7 @@
     const rid  = () => $('roomId').value.trim();
     const srid = () => $('seatRoomId').value.trim() || rid();
     const prid = () => $('projectorRoomId').value.trim() || rid();
+    const pridPomodoro = () => $('pomodoroRoomId').value.trim() || rid();
     const sid  = () => $('seatId').value.trim();
 
     function log(msg, cls = 'info') {
@@ -201,6 +224,20 @@
       });
       log('👂 Subscribed: '+dest, 'out');
       log('Используй POST /projector и PROJECTOR_CONTROL, чтобы увидеть события PROJECTOR_STARTED / CONTROL / STREAM_LIVE / STREAM_OFFLINE.', 'info');
+    }
+
+    function subPomodoro() {
+      if (!chk()) return;
+      const r = pridPomodoro();
+      if (!r) { log('⚠️ Введи Room ID для помодоро', 'err'); return; }
+      if (pomodoroSub) pomodoroSub.unsubscribe();
+      const dest = '/topic/room/'+r+'/pomodoro';
+      pomodoroSub = stompClient.subscribe(dest, frame => {
+        const e = parseEvent(frame.body);
+        log('⏱ ['+e.type+'] '+JSON.stringify(e.payload, null, 2), 'in');
+      });
+      log('👂 Subscribed: '+dest, 'out');
+      log('Используй POST /pomodoro/start/pause/resume/skip/stop, чтобы увидеть события POMODORO_*.', 'info');
     }
 
     function parseEvent(body) {
@@ -311,6 +348,65 @@
       const payload = { action, positionMs: pos };
       log(`WS SEND ${dest}: `+JSON.stringify(payload), 'out');
       stompClient.send(dest, {}, JSON.stringify(payload));
+    }
+
+    /* ── ПОМОДОРО REST ──────────────────────────────────────────────────── */
+
+    function parsePomodoroConfig() {
+      const raw = $('pomodoroConfig').value.trim();
+      if (!raw) return {};
+      const parts = raw.split(',').map(x => parseInt(x.trim(), 10)).filter(x => !isNaN(x));
+      const [work, brk, longBrk, rounds] = parts;
+      const body = {};
+      if (work) body.workDuration = work;
+      if (brk) body.breakDuration = brk;
+      if (longBrk) body.longBreakDuration = longBrk;
+      if (rounds) body.roundsTotal = rounds;
+      return body;
+    }
+
+    function pomodoroStart() {
+      const r = pridPomodoro();
+      if (!r) { log('⚠️ Нужен Room ID для помодоро', 'err'); return; }
+      const body = parsePomodoroConfig();
+      const url = `/api/rooms/${r}/pomodoro/start`;
+      log(`➡️ POST ${url} body=${JSON.stringify(body)}`, 'out');
+      fetch('http://localhost:8080'+url, {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer '+tok(),
+          'Content-Type': 'application/json'
+        },
+        body: Object.keys(body).length ? JSON.stringify(body) : '{}'
+      }).then(async res => {
+        let txt = await res.text();
+        try { txt = JSON.stringify(JSON.parse(txt), null, 2); } catch(_) {}
+        log(`← ${res.status}: ${txt}`, res.ok ? 'in' : 'err');
+      }).catch(e => log('❌ '+e, 'err'));
+    }
+
+    function pomodoroPause() {
+      const r = pridPomodoro();
+      if (!r) { log('⚠️ Нужен Room ID для помодоро', 'err'); return; }
+      api('POST', `/api/rooms/${r}/pomodoro/pause`);
+    }
+
+    function pomodoroResume() {
+      const r = pridPomodoro();
+      if (!r) { log('⚠️ Нужен Room ID для помодоро', 'err'); return; }
+      api('POST', `/api/rooms/${r}/pomodoro/resume`);
+    }
+
+    function pomodoroSkip() {
+      const r = pridPomodoro();
+      if (!r) { log('⚠️ Нужен Room ID для помодоро', 'err'); return; }
+      api('POST', `/api/rooms/${r}/pomodoro/skip`);
+    }
+
+    function pomodoroStop() {
+      const r = pridPomodoro();
+      if (!r) { log('⚠️ Нужен Room ID для помодоро', 'err'); return; }
+      api('DELETE', `/api/rooms/${r}/pomodoro`);
     }
   </script>
 </body>
