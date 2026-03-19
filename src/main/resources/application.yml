@@ -31,3 +31,7 @@ springdoc:
   swagger-ui:
     path: /swagger-ui.html
     enabled: true
+
+# SRS media server — used for STREAM mode projector sessions
+srs:
+  host: ${SRS_HOST:localhost}

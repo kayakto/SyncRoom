@@ -1,5 +1,421 @@
 # SyncRoom — Документация для Android разработчика
 
+> Как работать с текущим backend API с Android. Основной акцент — новая фича **проектора** (EMBED / RTMP-стрим).
+
+**Base URL:** `http://host:8080`  
+**WebSocket URL:** `ws://host:8080/ws-stomp`
+
+---
+
+## 1. Краткое резюме существующих фич
+
+Полная детализация старых возможностей описана в `README.md`. Здесь только выжимка:
+
+- **Auth** — JWT авторизация:
+  - `POST /api/auth/email`
+  - `POST /api/auth/register`
+  - `POST /api/auth/oauth`
+  - `POST /api/auth/refresh`
+  - Ответ:
+    ```json
+    { "accessToken": "eyJ...", "refreshToken": "eyJ...", "isFirstLogin": true }
+    ```
+
+- **Points** — точки на карте:
+  - CRUD по `GET/POST/PUT/DELETE /api/users/{userId}/points`.
+
+- **Rooms** — комнаты:
+  - `GET /api/rooms`, `GET /api/rooms/my`
+  - `POST /api/rooms/{id}/join`, `POST /api/rooms/{id}/leave`
+  - Ограничение: один пользователь может быть только в одной комнате одновременно.
+
+- **Seats** — места в комнате:
+  - `POST /api/rooms/{roomId}/seats/{seatId}/sit`
+  - `POST /api/rooms/{roomId}/seats/{seatId}/leave`
+  - Топик `/topic/room/{roomId}/seats` с событиями `SEAT_TAKEN` / `SEAT_LEFT`.
+
+Ниже — только то, что добавилось: **проектор**.
+
+---
+
+## 2. Проектор: совместный просмотр видео
+
+### 2.1. Концепция
+
+В каждой комнате может быть один активный «проектор»:
+
+- **EMBED** — проигрывание готового видео по URL:
+  - VK Video (`vk.com/video_ext.php?...`)
+  - RuTube (`rutube.ru/play/embed/...`)
+  - Прямые `.mp4`, `.webm`, `.m3u8` и т.п.
+- **STREAM** — живой RTMP-стрим (OBS / камера телефона → SRS медиасервер → HLS для зрителей).
+
+Любой участник комнаты может:
+
+- включить проектор (становится хостом, старая сессия перезаписывается),
+- выключить проектор, если он сейчас хост.
+
+---
+
+## 3. REST API проектора
+
+Все эндпоинты (кроме `srs-callback`) требуют заголовок:
+
+```http
+Authorization: Bearer <accessToken>
+```
+
+### 3.1. Эндпоинты
+
+```text
+GET    /api/rooms/{roomId}/projector      // текущее состояние проектора
+POST   /api/rooms/{roomId}/projector      // включить / перезапустить
+DELETE /api/rooms/{roomId}/projector      // выключить (только хост)
+
+POST   /api/projector/srs-callback        // внутренний HTTP callback от SRS (без JWT)
+```
+
+### 3.2. Запуск EMBED-режима
+
+```http
+POST /api/rooms/{roomId}/projector
+Content-Type: application/json
+
+{
+  "mode": "EMBED",
+  "videoUrl": "https://vk.com/video_ext.php?oid=-12345&id=67890",
+  "videoTitle": "Лекция по матану"
+}
+```
+
+- пользователь должен быть участником комнаты;
+- `videoUrl` обязателен для EMBED;
+- при успешном вызове:
+  - в БД создаётся/обновляется запись `projector_sessions`,
+  - рассылается WebSocket-событие `PROJECTOR_STARTED` в `/topic/room/{roomId}/projector`.
+
+### 3.3. Запуск STREAM-режима
+
+```http
+POST /api/rooms/{roomId}/projector
+Content-Type: application/json
+
+{
+  "mode": "STREAM",
+  "videoTitle": "Стрим Полины"
+}
+```
+
+- `videoUrl` не передаётся;
+- сервер:
+  - генерирует `streamKey = "room-" + roomId`;
+  - формирует `videoUrl = "http://{SRS_HOST}:8085/live/{streamKey}.m3u8"` — HLS для проигрывания;
+  - сохраняет в БД `isLive = false`;
+  - в ответе **только хосту** добавляет:
+    ```json
+    "rtmpUrl": "rtmp://{SRS_HOST}:1935/live/room-..."
+    ```
+    — её нужно вставить в OBS/камеру.
+
+### 3.4. Получение состояния проектора
+
+```http
+GET /api/rooms/{roomId}/projector
+```
+
+- 200 — если проектор включён,
+- 404 — если проектор не активен в этой комнате.
+
+Пример ответа (EMBED):
+
+```json
+{
+  "id": "uuid",
+  "roomId": "uuid",
+  "host": { "id": "user-uuid", "name": "Полина", "avatarUrl": "https://..." },
+  "mode": "EMBED",
+  "videoUrl": "https://vk.com/video_ext.php?oid=-12345&id=67890",
+  "videoTitle": "Лекция по матану",
+  "isPlaying": true,
+  "positionMs": 42000,
+  "isLive": false,
+  "updatedAt": "2026-03-18T12:00:00Z"
+}
+```
+
+Пример ответа (STREAM, для хоста):
+
+```json
+{
+  "id": "uuid",
+  "roomId": "uuid",
+  "host": { "id": "user-uuid", "name": "Полина", "avatarUrl": "https://..." },
+  "mode": "STREAM",
+  "videoUrl": "http://host:8085/live/room-abc123.m3u8",
+  "videoTitle": "Стрим Полины",
+  "streamKey": "room-abc123",
+  "rtmpUrl": "rtmp://host:1935/live/room-abc123",
+  "isPlaying": false,
+  "positionMs": 0,
+  "isLive": true,
+  "updatedAt": "2026-03-18T12:00:00Z"
+}
+```
+
+Если запрос делает **зритель**, поле `rtmpUrl` будет `null`/отсутствовать.
+
+### 3.5. Выключение проектора
+
+```http
+DELETE /api/rooms/{roomId}/projector   → 204 No Content
+```
+
+- может вызвать только текущий хост;
+- backend также автоматически выключает проектор, если хост выходит из комнаты.
+
+---
+
+## 4. WebSocket: события проектора
+
+### 4.1. Подключение STOMP
+
+```text
+CONNECT
+Authorization:Bearer <accessToken>
+accept-version:1.2
+```
+
+URL: `ws://host:8080/ws-stomp`.
+
+### 4.2. Каналы
+
+| Назначение | Адрес |
+|-----------|-------|
+| События проектора | `/topic/room/{roomId}/projector` |
+| Управление EMBED (от хоста) | `/app/room/{roomId}/projector/control` |
+
+### 4.3. Формат событий
+
+Общий формат:
+
+```json
+{
+  "type": "PROJECTOR_STARTED",
+  "payload": { ... },
+  "timestamp": "2026-03-18T12:00:00Z"
+}
+```
+
+Основные типы:
+
+- `PROJECTOR_STARTED` — проектор включён или перезаписан;
+- `PROJECTOR_STOPPED` — проектор выключен;
+- `PROJECTOR_CONTROL` — play/pause/seek (EMBED);
+- `STREAM_LIVE` — стрим пошёл в эфир (SRS `on_publish`);
+- `STREAM_OFFLINE` — стрим завершился (SRS `on_unpublish`).
+
+### 4.4. Управление EMBED с Android
+
+Хост управляет проектором через STOMP:
+
+```text
+SEND
+destination:/app/room/{roomId}/projector/control
+
+{
+  "action": "PLAY",      // PLAY | PAUSE | SEEK
+  "positionMs": 42000
+}
+```
+
+Backend:
+
+1. проверяет, что это хост;
+2. обновляет в БД `isPlaying` и `positionMs`;
+3. рассылает `PROJECTOR_CONTROL` всем в `/topic/room/{roomId}/projector`.
+
+---
+
+## 5. Kotlin-модели и примеры кода
+
+### 5.1. Data-классы
+
+```kotlin
+@Serializable
+data class ProjectorUserDto(
+    val id: String,
+    val name: String,
+    val avatarUrl: String?
+)
+
+@Serializable
+data class ProjectorResponse(
+    val id: String,
+    val roomId: String,
+    val host: ProjectorUserDto,
+    val mode: String,              // "EMBED" или "STREAM"
+    val videoUrl: String,
+    val videoTitle: String? = null,
+    val streamKey: String? = null,
+    val rtmpUrl: String? = null,   // только для хоста STREAM
+    @SerialName("isPlaying") val isPlaying: Boolean,
+    val positionMs: Long,
+    @SerialName("isLive") val isLive: Boolean,
+    val updatedAt: String
+)
+
+@Serializable
+data class StartProjectorRequest(
+    val mode: String,          // "EMBED" или "STREAM"
+    val videoUrl: String? = null,
+    val videoTitle: String? = null
+)
+
+@Serializable
+data class ProjectorEventEnvelope(
+    val type: String,
+    val payload: JsonObject,
+    val timestamp: String
+)
+
+@Serializable
+data class ProjectorControlPayload(
+    val action: String,
+    val positionMs: Long
+)
+```
+
+### 5.2. Retrofit-интерфейс (добавка к существующему)
+
+```kotlin
+interface SyncRoomApi {
+    // ... уже существующие методы (auth, points, rooms, seats) ...
+
+    // Projector
+    @GET("/api/rooms/{roomId}/projector")
+    suspend fun getProjector(
+        @Path("roomId") roomId: String,
+        @Header("Authorization") token: String
+    ): ProjectorResponse
+
+    @POST("/api/rooms/{roomId}/projector")
+    suspend fun startProjector(
+        @Path("roomId") roomId: String,
+        @Header("Authorization") token: String,
+        @Body body: StartProjectorRequest
+    ): ProjectorResponse
+
+    @DELETE("/api/rooms/{roomId}/projector")
+    suspend fun stopProjector(
+        @Path("roomId") roomId: String,
+        @Header("Authorization") token: String
+    )
+}
+```
+
+### 5.3. Подписка на события проектора
+
+```kotlin
+// Подключение STOMP
+stompClient.connect(
+    "ws://host:8080/ws-stomp",
+    customHeaders = mapOf("Authorization" to "Bearer $token")
+)
+
+// Подписка на проектор
+stompClient.subscribeTo("/topic/room/$roomId/projector").collect { frame ->
+    val event = Json.decodeFromString<ProjectorEventEnvelope>(frame.body)
+    when (event.type) {
+        "PROJECTOR_STARTED" -> handleProjectorStarted(event.payload)
+        "PROJECTOR_STOPPED" -> handleProjectorStopped()
+        "PROJECTOR_CONTROL" -> {
+            val payload = Json.decodeFromJsonElement(
+                ProjectorControlPayload.serializer(),
+                event.payload
+            )
+            handleProjectorControl(payload)
+        }
+        "STREAM_LIVE"       -> handleStreamLive(event.payload)
+        "STREAM_OFFLINE"    -> handleStreamOffline()
+    }
+}
+```
+
+### 5.4. Отправка `PROJECTOR_CONTROL` с Android
+
+```kotlin
+fun sendProjectorControl(roomId: String, action: String, positionMs: Long) {
+    val body = ProjectorControlPayload(action = action, positionMs = positionMs)
+    val json = Json.encodeToString(ProjectorControlPayload.serializer(), body)
+    stompClient.send(
+        destination = "/app/room/$roomId/projector/control",
+        body = json
+    )
+}
+```
+
+---
+
+## 6. Практические сценарии
+
+### 6.1. Совместный просмотр EMBED-видео
+
+1. Пользователь входит в комнату (`POST /api/rooms/{id}/join`).
+2. Отправляет:
+   ```kotlin
+   api.startProjector(
+       roomId,
+       "Bearer $token",
+       StartProjectorRequest(
+           mode = "EMBED",
+           videoUrl = embedUrl,
+           videoTitle = title
+       )
+   )
+   ```
+3. Все клиенты, подписанные на `/topic/room/{roomId}/projector`, получают `PROJECTOR_STARTED`.
+4. Хост управляет play/pause/seek через `sendProjectorControl`.
+
+### 6.2. RTMP-стрим с OBS / камеры
+
+1. Хост вызывает:
+   ```kotlin
+   val resp = api.startProjector(
+       roomId,
+       "Bearer $token",
+       StartProjectorRequest(mode = "STREAM", videoTitle = "Стрим")
+   )
+   val rtmpUrl = resp.rtmpUrl      // показать в UI или вставить в OBS
+   val hlsUrl  = resp.videoUrl     // адрес для ExoPlayer у зрителей
+   ```
+2. В OBS:
+   - `Server`: часть до последнего `/` из `rtmpUrl`;
+   - `Stream key`: хвост после `/`.
+3. Когда OBS начинает стрим, SRS дергает `POST /api/projector/srs-callback`, backend шлёт `STREAM_LIVE`.
+4. Все зрители могут начать воспроизведение `videoUrl` через ExoPlayer.
+5. Когда стрим заканчивается, приходит `STREAM_OFFLINE`, `isLive` в REST станет `false`.
+
+---
+
+## 7. Тестирование без Android (stomp-test.html)
+
+Для ручной проверки WS и REST проектора используйте `stomp-test.html` в корне проекта:
+
+1. Запустить backend (`docker-compose up` или `gradle bootRun`).
+2. Открыть `stomp-test.html` в браузере.
+3. Вставить `accessToken` → **⚡ Connect**.
+4. Нажать **📋 GET /api/rooms** — выберется комната.
+5. В блоке **Проектор**:
+   - указать `Room ID`, `Mode`, `Video URL` (для EMBED),
+   - нажать **👂 Subscribe /projector**,
+   - нажать **▶ POST /projector (start)**,
+   - для EMBED поиграться с **🎛 SEND PROJECTOR_CONTROL (WS)**,
+   - для STREAM — скопировать `rtmpUrl` в OBS и посмотреть `STREAM_LIVE` / `STREAM_OFFLINE`.
+
+Эти же события и структуры данных вы будете использовать на Android.
+
+# SyncRoom — Документация для Android разработчика
+
 > Актуальное состояние backend API. Все эндпоинты требуют `Authorization: Bearer <accessToken>`, кроме `/api/auth/*`.
 
 **Base URL:** `http://host:8080`  

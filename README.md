@@ -103,6 +103,42 @@ APP_PORT=8080
 
 **Коды ответов:** `200` успех, `403` чужое место, `404` не найдено, `409` место занято другим.
 
+### Projector — совместный просмотр (Embed + RTMP)
+
+| Метод | URL | Описание |
+|-------|-----|----------|
+| GET | `/api/rooms/{roomId}/projector` | Текущее состояние проектора в комнате |
+| POST | `/api/rooms/{roomId}/projector` | Включить / перезапустить проектор |
+| DELETE | `/api/rooms/{roomId}/projector` | Выключить проектор (только хост) |
+| POST | `/api/projector/srs-callback` | Внутренний callback от SRS (RTMP медиасервер) |
+
+**Вариант A — EMBED (готовое видео):**
+
+- Request:  
+  `POST /api/rooms/{roomId}/projector`
+  ```json
+  { "mode": "EMBED", "videoUrl": "https://vk.com/video_ext.php?oid=-123&id=456", "videoTitle": "Лекция" }
+  ```
+- В БД создаётся / обновляется `projector_sessions` с `mode="EMBED"`, `videoUrl`, `isPlaying=false`, `positionMs=0`.
+
+**Вариант B — STREAM (RTMP → HLS):**
+
+- Request:  
+  `POST /api/rooms/{roomId}/projector`
+  ```json
+  { "mode": "STREAM", "videoTitle": "Стрим Полины" }
+  ```
+- Сервер генерирует:
+  - `streamKey = "room-" + roomId`
+  - `videoUrl = "http://{SRS_HOST}:8085/live/{streamKey}.m3u8"` — для воспроизведения у зрителей
+  - `rtmpUrl = "rtmp://{SRS_HOST}:1935/live/{streamKey}"` — возвращается **только хосту** (для OBS / камеры).
+
+**Правила:**
+
+- 1 активный проектор на комнату (`UNIQUE(room_id)`).
+- Включить проектор может любой участник комнаты; при этом хостом становится он, старая сессия затирается.
+- Выключить (`DELETE`) и управлять воспроизведением (play/pause/seek) может только текущий хост.
+
 ---
 
 ## WebSocket (STOMP)
@@ -126,6 +162,48 @@ Authorization:Bearer <accessToken>
 |-------|---------|
 | `/topic/room/{roomId}` | `PARTICIPANT_JOINED`, `PARTICIPANT_LEFT` |
 | `/topic/room/{roomId}/seats` | `SEAT_TAKEN`, `SEAT_LEFT` ✨ |
+| `/topic/room/{roomId}/projector` | `PROJECTOR_STARTED`, `PROJECTOR_STOPPED`, `PROJECTOR_CONTROL`, `STREAM_LIVE`, `STREAM_OFFLINE` ✨ |
+
+### Управление проектором (STOMP)
+
+**Подписка:**
+
+```text
+SUBSCRIBE
+destination:/topic/room/{roomId}/projector
+id:sub-projector
+```
+
+**События:**
+
+- `PROJECTOR_STARTED`
+  ```json
+  {
+    "type": "PROJECTOR_STARTED",
+    "payload": {
+      "host": { "id": "uuid", "name": "Полина", "avatarUrl": "https://..." },
+      "mode": "EMBED",
+      "videoUrl": "https://vk.com/video_ext.php?oid=-123&id=456",
+      "videoTitle": "Лекция по матану"
+    },
+    "timestamp": "2026-03-18T12:00:00Z"
+  }
+  ```
+- `PROJECTOR_STOPPED` — `{ "hostId": "uuid" }`
+- `PROJECTOR_CONTROL` (только EMBED) — `{ "action": "PLAY|PAUSE|SEEK", "positionMs": 42000 }`
+- `STREAM_LIVE` / `STREAM_OFFLINE` (только STREAM)
+
+**Отправка управления (от хоста, EMBED):**
+
+```text
+SEND
+destination:/app/room/{roomId}/projector/control
+
+{
+  "action": "PLAY",
+  "positionMs": 42000
+}
+```
 
 ### Типы событий
 
@@ -135,6 +213,11 @@ Authorization:Bearer <accessToken>
 | `PARTICIPANT_LEFT` | `.../room/{id}` | `POST /leave` | `{ userId, name, avatarUrl }` |
 | `SEAT_TAKEN` | `.../room/{id}/seats` | `POST /sit` | `{ seatId, user: { id, name, avatarUrl } }` |
 | `SEAT_LEFT` | `.../room/{id}/seats` | `POST /leave seat` или выход | `{ seatId, userId }` |
+| `PROJECTOR_STARTED` | `.../room/{id}/projector` | `POST /projector` | `{ host, mode, videoUrl, videoTitle, streamKey? }` |
+| `PROJECTOR_STOPPED` | `.../room/{id}/projector` | `DELETE /projector` или выход хоста | `{ hostId }` |
+| `PROJECTOR_CONTROL` | `.../room/{id}/projector` | WS SEND `/projector/control` | `{ action, positionMs }` |
+| `STREAM_LIVE` | `.../room/{id}/projector` | SRS `on_publish` | `{ videoUrl }` |
+| `STREAM_OFFLINE` | `.../room/{id}/projector` | SRS `on_unpublish` | `{}` |
 
 ### Тестирование WebSocket
 
@@ -142,6 +225,7 @@ Authorization:Bearer <accessToken>
 1. Вставь `accessToken` → **Connect**
 2. Нажми **GET /api/rooms** — авто-заполнит roomId и первый свободный seatId
 3. **Subscribe /seats** → **POST /sit** → увидишь `SEAT_TAKEN`
+4. В блоке **Проектор**: заполни Room ID, mode / URL, нажми **POST /projector (start)** и **👂 Subscribe /projector** — в логе появятся события проектора.
 
 > Postman WebSocket tab не подходит для STOMP — используй `stomp-test.html`.
 
@@ -161,19 +245,27 @@ src/main/java/ru/syncroom/
 │   ├── domain/     # Room, RoomParticipant, Seat (JPA)
 │   ├── repository/ # RoomRepository, SeatRepository
 │   └── ws/         # RoomEvent, RoomEventType, SeatTakenPayload, SeatLeftPayload
+├── projector/
+│   ├── controller/ # REST: /api/rooms/{roomId}/projector, SRS callback
+│   ├── service/    # ProjectorService (EMBED/STREAM, WS-события)
+│   ├── dto/        # ProjectorRequest, ProjectorResponse, UserDto
+│   ├── domain/     # ProjectorSession (JPA)
+│   ├── repository/ # ProjectorSessionRepository
+│   └── ws/         # ProjectorEvent, ProjectorEventType, ProjectorWsController
 └── common/
     ├── config/     # SecurityConfig (CORS), WebSocketConfig, WebSocketSecurityConfig
     ├── security/   # JwtTokenService, JwtAuthenticationFilter
     └── exception/  # GlobalExceptionHandler (400/403/404/409)
 ```
 
-**Миграции Flyway:**
+**Миграции Flyway (основные):**
 ```
 V1 — создание users
 V2 — создание rooms + participants
 V3 — создание points
 V4 — добавление background_picture к rooms
 V5 — создание seats (10 мест на комнату, нормализованные x/y)
+V6 — создание projector_sessions (проектор-стрим)
 ```
 
 ---
@@ -192,7 +284,8 @@ gradle test
 | `RoomControllerTest` | GET rooms/my, join, leave | 31 |
 | `RoomServiceWebSocketTest` | WS-события PARTICIPANT_JOINED/LEFT | 14 |
 | `SeatControllerTest` | sit, stand-up, auto-move, 403, 409, 404 | 9 |
-| **Итого** | | **103** |
+| `ProjectorControllerTest` | REST + SRS callback для проектора | 7 |
+| **Итого** | | **108** |
 
 Тесты используют H2 in-memory БД, `@MockitoBean SimpMessagingTemplate` (Spring Boot 3.4+), Redis не требуется.
 

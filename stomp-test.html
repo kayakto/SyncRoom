@@ -73,8 +73,48 @@
   <button class="green"  onclick="sit()">🪑 POST /sit</button>
   <button class="yellow" onclick="standUp()">🚶 POST /leave seat</button>
 
+  <!-- ─── ПРОЕКТОР ──────────────────────────────────────────────────────── -->
+  <h3>5. Проектор (Embed & Stream)</h3>
+  <div class="grid2">
+    <div>
+      <label>Room ID (для проектора)</label>
+      <input id="projectorRoomId" placeholder="UUID комнаты (обычно = Room ID выше)" />
+    </div>
+    <div>
+      <label>Mode</label>
+      <input id="projectorMode" value="EMBED" placeholder="EMBED или STREAM" />
+    </div>
+  </div>
+  <div class="grid2">
+    <div>
+      <label>Video URL (только для EMBED)</label>
+      <input id="projectorVideoUrl" placeholder="https://vk.com/video_ext.php?..." />
+    </div>
+    <div>
+      <label>Video title (опционально)</label>
+      <input id="projectorVideoTitle" placeholder="Лекция по матану" />
+    </div>
+  </div>
+  <div class="row">
+    <button class="green" onclick="projectorStart()">▶ POST /projector (start)</button>
+    <button class="red"   onclick="projectorStop()">⏹ DELETE /projector (stop)</button>
+    <button onclick="subProjector()">👂 Subscribe /projector</button>
+  </div>
+
+  <div class="grid2">
+    <div>
+      <label>Control action (PLAY / PAUSE / SEEK)</label>
+      <input id="projectorControlAction" value="PLAY" />
+    </div>
+    <div>
+      <label>Position (ms)</label>
+      <input id="projectorControlPos" value="0" />
+    </div>
+  </div>
+  <button onclick="projectorControl()">🎛 SEND PROJECTOR_CONTROL (WS)</button>
+
   <!-- ─── ЛОГ ───────────────────────────────────────────────────────────── -->
-  <h3>5. Лог</h3>
+  <h3>6. Лог</h3>
   <button class="sm" onclick="clearLog()">Очистить</button>
   <div id="log"></div>
 
@@ -84,12 +124,14 @@
     let stompClient = null;
     let roomSub = null;
     let seatSub = null;
+    let projectorSub = null;
 
     /* ── helpers ─────────────────────────────────────────────────── */
     const $ = id => document.getElementById(id);
     const tok  = () => $('token').value.trim();
     const rid  = () => $('roomId').value.trim();
     const srid = () => $('seatRoomId').value.trim() || rid();
+    const prid = () => $('projectorRoomId').value.trim() || rid();
     const sid  = () => $('seatId').value.trim();
 
     function log(msg, cls = 'info') {
@@ -145,6 +187,20 @@
       });
       log('👂 Subscribed: '+dest, 'out');
       log('Нажми /sit чтобы увидеть SEAT_TAKEN. /leave seat чтобы SEAT_LEFT.', 'info');
+    }
+
+    function subProjector() {
+      if (!chk()) return;
+      const r = prid();
+      if (!r) { log('⚠️ Введи Room ID для проектора', 'err'); return; }
+      if (projectorSub) projectorSub.unsubscribe();
+      const dest = '/topic/room/'+r+'/projector';
+      projectorSub = stompClient.subscribe(dest, frame => {
+        const e = parseEvent(frame.body);
+        log('📽 ['+e.type+'] '+JSON.stringify(e.payload, null, 2), 'in');
+      });
+      log('👂 Subscribed: '+dest, 'out');
+      log('Используй POST /projector и PROJECTOR_CONTROL, чтобы увидеть события PROJECTOR_STARTED / CONTROL / STREAM_LIVE / STREAM_OFFLINE.', 'info');
     }
 
     function parseEvent(body) {
@@ -207,6 +263,54 @@
     function standUp() {
       if (!srid() || !sid()) { log('⚠️ Нужны Room ID и Seat ID', 'err'); return; }
       api('POST', `/api/rooms/${srid()}/seats/${sid()}/leave`);
+    }
+
+    /* ── ПРОЕКТОР REST + WS ─────────────────────────────────────────────── */
+
+    function projectorStart() {
+      const r = prid();
+      if (!r) { log('⚠️ Нужен Room ID для проектора', 'err'); return; }
+      const mode = $('projectorMode').value.trim().toUpperCase() || 'EMBED';
+      const body = { mode, videoTitle: $('projectorVideoTitle').value.trim() || null };
+      if (mode === 'EMBED') {
+        if (!$('projectorVideoUrl').value.trim()) {
+          log('⚠️ Для EMBED нужно заполнить Video URL', 'err');
+          return;
+        }
+        body.videoUrl = $('projectorVideoUrl').value.trim();
+      }
+      const url = `/api/rooms/${r}/projector`;
+      log(`➡️ POST ${url} body=${JSON.stringify(body)}`, 'out');
+      fetch('http://localhost:8080'+url, {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer '+tok(),
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body)
+      }).then(async res => {
+        let txt = await res.text();
+        try { txt = JSON.stringify(JSON.parse(txt), null, 2); } catch(_) {}
+        log(`← ${res.status}: ${txt}`, res.ok ? 'in' : 'err');
+      }).catch(e => log('❌ '+e, 'err'));
+    }
+
+    function projectorStop() {
+      const r = prid();
+      if (!r) { log('⚠️ Нужен Room ID для проектора', 'err'); return; }
+      api('DELETE', `/api/rooms/${r}/projector`);
+    }
+
+    function projectorControl() {
+      if (!chk()) return;
+      const r = prid();
+      if (!r) { log('⚠️ Нужен Room ID для проектора', 'err'); return; }
+      const action = $('projectorControlAction').value.trim().toUpperCase() || 'PLAY';
+      const pos = parseInt($('projectorControlPos').value.trim() || '0', 10) || 0;
+      const dest = `/app/room/${r}/projector/control`;
+      const payload = { action, positionMs: pos };
+      log(`WS SEND ${dest}: `+JSON.stringify(payload), 'out');
+      stompClient.send(dest, {}, JSON.stringify(payload));
     }
   </script>
 </body>

@@ -46,6 +46,22 @@ services:
       - syncroom-network
     restart: unless-stopped
 
+  # SRS media server for RTMP → HLS streaming (Projector STREAM mode)
+  media:
+    image: ossrs/srs:5
+    container_name: syncroom-media
+    ports:
+      - "1935:1935"   # RTMP — host streams from OBS/camera here
+      - "8085:8080"   # HLS  — viewers pull .m3u8 from here
+    volumes:
+      - ./srs.conf:/usr/local/srs/conf/docker.conf
+    command: ./objs/srs -c conf/docker.conf
+    depends_on:
+      - app
+    networks:
+      - syncroom-network
+    restart: unless-stopped
+
 volumes:
   postgres_data:
     driver: local

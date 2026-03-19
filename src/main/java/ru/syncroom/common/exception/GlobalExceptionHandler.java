@@ -106,6 +106,16 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.FORBIDDEN).body(error);
     }
 
+    @ExceptionHandler(ru.syncroom.projector.service.ProjectorService.ProjectorForbiddenException.class)
+    public ResponseEntity<ErrorResponse> handleProjectorForbidden(ru.syncroom.projector.service.ProjectorService.ProjectorForbiddenException ex) {
+        log.debug("Projector forbidden: {}", ex.getMessage());
+        ErrorResponse error = ErrorResponse.builder()
+                .message(ex.getMessage())
+                .status(HttpStatus.FORBIDDEN.value())
+                .build();
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(error);
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleGenericException(Exception ex) {
         log.error("Unexpected error", ex);

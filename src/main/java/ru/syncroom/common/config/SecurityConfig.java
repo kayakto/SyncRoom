@@ -47,6 +47,8 @@ public class SecurityConfig {
                         // WebSocket handshake — auth happens inside ChannelInterceptor
                         .requestMatchers("/ws/**").permitAll()
                         .requestMatchers("/ws-stomp/**").permitAll()
+                        // SRS media server callback — called from Docker internal network, no JWT
+                        .requestMatchers("/api/projector/srs-callback").permitAll()
                         // All other endpoints require authentication
                         .anyRequest().authenticated()
                 )
