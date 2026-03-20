@@ -679,6 +679,187 @@ interface SyncRoomApi {
   - создание/изменение/удаление тасков делается чисто через REST, без WebSocket;
   - `sortOrder` можно использовать для drag & drop сортировки (при перестановке пересчитывать и отправлять `UpdateTaskRequest` с новыми значениями).
 
+---
+
+## 9. Игры (Quiplash) — инструкция для Android
+
+### 9.1. REST API игр
+
+```text
+POST /api/rooms/{roomId}/games
+GET  /api/rooms/{roomId}/games/current
+POST /api/games/{gameId}/ready
+POST /api/games/{gameId}/start
+```
+
+**Создание игры:**
+
+```json
+POST /api/rooms/{roomId}/games
+{
+  "gameType": "QUIPLASH"
+}
+```
+
+**Ответ:**
+
+```json
+{
+  "gameId": "uuid",
+  "gameType": "QUIPLASH",
+  "status": "LOBBY",
+  "players": [
+    { "id": "user-uuid", "name": "Полина", "avatarUrl": "...", "isReady": false, "score": 0 }
+  ]
+}
+```
+
+### 9.2. WebSocket игры
+
+Подписка:
+
+```text
+SUBSCRIBE
+destination:/topic/game/{gameId}
+id:sub-game
+```
+
+Отправка действий:
+
+```text
+SEND
+destination:/app/game/{gameId}/action
+```
+
+### 9.3. Серверные события, которые нужно обрабатывать на Android
+
+- `GAME_STARTED`
+- `PROMPT_RECEIVED`
+- `WAITING_FOR_OTHERS`
+- `WAITING_FOR_VOTES`
+- `ROUND_RESULT`
+- `GAME_FINISHED`
+
+Пример события:
+
+```json
+{
+  "type": "PROMPT_RECEIVED",
+  "payload": {
+    "promptId": "uuid",
+    "text": "Что было бы, если бы коты умели говорить?",
+    "timeLimit": 60
+  },
+  "timestamp": "2026-03-18T12:00:00Z"
+}
+```
+
+### 9.4. Действия клиента (WS)
+
+**Отметиться готовым:**
+
+```json
+{
+  "type": "PLAYER_READY",
+  "payload": {}
+}
+```
+
+**Отправить ответ:**
+
+```json
+{
+  "type": "SUBMIT_ANSWER",
+  "payload": { "text": "Они бы критиковали нашу еду" }
+}
+```
+
+**Отправить голос:**
+
+```json
+{
+  "type": "SUBMIT_VOTE",
+  "payload": { "answerId": "uuid-1" }
+}
+```
+
+### 9.5. Kotlin модели для игры
+
+```kotlin
+@Serializable
+data class GameResponse(
+    val gameId: String,
+    val gameType: String,
+    val status: String,
+    val players: List<GamePlayerDto>
+)
+
+@Serializable
+data class GamePlayerDto(
+    val id: String,
+    val name: String,
+    val avatarUrl: String? = null,
+    val isReady: Boolean = false,
+    val score: Int = 0
+)
+
+@Serializable
+data class GameEventEnvelope(
+    val type: String,
+    val payload: JsonObject,
+    val timestamp: String
+)
+
+@Serializable
+data class GameActionMessage(
+    val type: String,
+    val payload: JsonObject = buildJsonObject { }
+)
+```
+
+### 9.6. Retrofit расширение (добавка к текущему SyncRoomApi)
+
+```kotlin
+interface SyncRoomApi {
+    // ...
+    @POST("/api/rooms/{roomId}/games")
+    suspend fun createGame(
+        @Path("roomId") roomId: String,
+        @Header("Authorization") token: String,
+        @Body body: CreateGameRequest
+    ): GameResponse
+
+    @GET("/api/rooms/{roomId}/games/current")
+    suspend fun getCurrentGame(
+        @Path("roomId") roomId: String,
+        @Header("Authorization") token: String
+    ): GameResponse
+
+    @POST("/api/games/{gameId}/ready")
+    suspend fun setReady(
+        @Path("gameId") gameId: String,
+        @Header("Authorization") token: String
+    )
+
+    @POST("/api/games/{gameId}/start")
+    suspend fun startGame(
+        @Path("gameId") gameId: String,
+        @Header("Authorization") token: String
+    )
+}
+
+@Serializable
+data class CreateGameRequest(val gameType: String = "QUIPLASH")
+```
+
+### 9.7. Что важно в текущей реализации Quiplash
+
+- 3 раунда.
+- Таймаут ответа: 60 сек (`"..."` для неответивших).
+- Таймаут голосования: 30 сек.
+- Автопереход между раундами: 5 сек.
+- После 3-го раунда сервер шлёт `GAME_FINISHED`.
+
 # SyncRoom — Документация для Android разработчика
 
 > Актуальное состояние backend API. Все эндпоинты требуют `Authorization: Bearer <accessToken>`, кроме `/api/auth/*`.

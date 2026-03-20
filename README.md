@@ -214,6 +214,36 @@ POST /api/rooms/{roomId}/tasks
 }
 ```
 
+### Games — Quiplash (Smekhlest)
+
+| Метод | URL | Описание |
+|-------|-----|----------|
+| POST | `/api/rooms/{roomId}/games` | Создать игровую сессию (лобби) |
+| GET | `/api/rooms/{roomId}/games/current` | Получить активную игру в комнате |
+| POST | `/api/games/{gameId}/ready` | Отметиться готовым (upsert игрока) |
+| POST | `/api/games/{gameId}/start` | Старт игры (минимум 3 ready игрока) |
+
+**Create game request:**
+
+```json
+{
+  "gameType": "QUIPLASH"
+}
+```
+
+**Create game response:**
+
+```json
+{
+  "gameId": "uuid",
+  "gameType": "QUIPLASH",
+  "status": "LOBBY",
+  "players": [
+    { "id": "user-uuid", "name": "Полина", "avatarUrl": "...", "isReady": false, "score": 0 }
+  ]
+}
+```
+
 ---
 
 ## WebSocket (STOMP)
@@ -239,6 +269,7 @@ Authorization:Bearer <accessToken>
 | `/topic/room/{roomId}/seats` | `SEAT_TAKEN`, `SEAT_LEFT` ✨ |
 | `/topic/room/{roomId}/projector` | `PROJECTOR_STARTED`, `PROJECTOR_STOPPED`, `PROJECTOR_CONTROL`, `STREAM_LIVE`, `STREAM_OFFLINE` ✨ |
 | `/topic/room/{roomId}/pomodoro` | `POMODORO_STARTED`, `POMODORO_PHASE_CHANGED`, `POMODORO_PAUSED`, `POMODORO_RESUMED`, `POMODORO_STOPPED` ✨ |
+| `/topic/game/{gameId}` | `GAME_STARTED`, `PROMPT_RECEIVED`, `WAITING_FOR_OTHERS`, `WAITING_FOR_VOTES`, `ROUND_RESULT`, `GAME_FINISHED` ✨ |
 
 ### Управление проектором (STOMP)
 
@@ -294,6 +325,12 @@ destination:/app/room/{roomId}/projector/control
 | `PROJECTOR_CONTROL` | `.../room/{id}/projector` | WS SEND `/projector/control` | `{ action, positionMs }` |
 | `STREAM_LIVE` | `.../room/{id}/projector` | SRS `on_publish` | `{ videoUrl }` |
 | `STREAM_OFFLINE` | `.../room/{id}/projector` | SRS `on_unpublish` | `{}` |
+| `GAME_STARTED` | `.../game/{id}` | `POST /games/{id}/start` | `{ players[] }` |
+| `PROMPT_RECEIVED` | `.../game/{id}` | старт / следующий раунд | `{ promptId, text, timeLimit }` |
+| `WAITING_FOR_OTHERS` | `.../game/{id}` | игрок отправил ответ раньше других | `{}` |
+| `WAITING_FOR_VOTES` | `.../game/{id}` | собраны ответы | `{ promptId, answers[], timeLimit }` |
+| `ROUND_RESULT` | `.../game/{id}` | завершено голосование раунда | `{ round, results[], scores[] }` |
+| `GAME_FINISHED` | `.../game/{id}` | завершен 3-й раунд | `{ scores[] }` |
 
 ### Тестирование WebSocket
 
@@ -302,6 +339,7 @@ destination:/app/room/{roomId}/projector/control
 2. Нажми **GET /api/rooms** — авто-заполнит roomId и первый свободный seatId
 3. **Subscribe /seats** → **POST /sit** → увидишь `SEAT_TAKEN`
 4. В блоке **Проектор**: заполни Room ID, mode / URL, нажми **POST /projector (start)** и **👂 Subscribe /projector** — в логе появятся события проектора.
+5. В блоке **Игры (Quiplash)**: создай игру, подпишись на `/topic/game/{gameId}`, вызови ready/start и отправляй `SUBMIT_ANSWER` / `SUBMIT_VOTE` через WS.
 
 > Postman WebSocket tab не подходит для STOMP — используй `stomp-test.html`.
 
@@ -328,6 +366,13 @@ src/main/java/ru/syncroom/
 │   ├── domain/     # ProjectorSession (JPA)
 │   ├── repository/ # ProjectorSessionRepository
 │   └── ws/         # ProjectorEvent, ProjectorEventType, ProjectorWsController
+├── games/
+│   ├── controller/ # REST: /api/rooms/{roomId}/games, /api/games/{gameId}/...
+│   ├── service/    # GameService (Quiplash flow + scoring + timers)
+│   ├── dto/        # CreateGameRequest, GameResponse, GameActionMessage
+│   ├── domain/     # GameSession, GamePlayer, Quiplash* entities, PromptBank
+│   ├── repository/ # Game*/Quiplash*/PromptBank repositories
+│   └── websocket/  # GameWebSocketHandler, GameEventSender, GameTimerService
 └── common/
     ├── config/     # SecurityConfig (CORS), WebSocketConfig, WebSocketSecurityConfig
     ├── security/   # JwtTokenService, JwtAuthenticationFilter
@@ -344,6 +389,7 @@ V5 — создание seats (10 мест на комнату, нормализ
 V6 — создание projector_sessions (проектор-стрим)
 V7 — создание pomodoro_sessions и study_tasks
 V8 — добавление полей paused_phase и remaining_seconds к pomodoro_sessions
+V9 — создание game_sessions, game_players, quiplash_* и prompt_bank
 ```
 
 ---
@@ -365,7 +411,9 @@ gradle test
 | `ProjectorControllerTest` | REST + SRS callback для проектора | 7 |
 | `PomodoroControllerTest` | REST для помодоро | 6 |
 | `StudyTaskControllerTest` | REST для учебных тасков | 4 |
-| **Итого** | | **118** |
+| `GameControllerTest` | REST сценарии игр (create/current/ready/start) | 2 |
+| `GameServiceWebSocketTest` | 3-раундовый Quiplash flow до GAME_FINISHED | 1 |
+| **Итого** | | **121** |
 
 Тесты используют H2 in-memory БД, `@MockitoBean SimpMessagingTemplate` (Spring Boot 3.4+), Redis не требуется.
 

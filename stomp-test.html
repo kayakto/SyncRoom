@@ -134,8 +134,43 @@
     <button onclick="subPomodoro()">👂 Subscribe /pomodoro</button>
   </div>
 
+  <!-- ─── ИГРЫ (QUIPLASH) ───────────────────────────────────────────────── -->
+  <h3>7. Игры (Quiplash)</h3>
+  <div class="grid2">
+    <div>
+      <label>Room ID (для создания игры)</label>
+      <input id="gameRoomId" placeholder="UUID комнаты (обычно = Room ID выше)" />
+    </div>
+    <div>
+      <label>Game ID</label>
+      <input id="gameId" placeholder="UUID игры (из ответа create/current)" />
+    </div>
+  </div>
+  <div class="grid2">
+    <div>
+      <label>Game type</label>
+      <input id="gameType" value="QUIPLASH" />
+    </div>
+    <div>
+      <label>Answer / Vote answerId</label>
+      <input id="gameActionValue" placeholder="text для SUBMIT_ANSWER или answerId для SUBMIT_VOTE" />
+    </div>
+  </div>
+  <div class="row">
+    <button class="green" onclick="gameCreate()">🎮 POST /games (create)</button>
+    <button onclick="gameCurrent()">📋 GET /games/current</button>
+    <button onclick="gameReady()">✅ POST /games/{id}/ready</button>
+    <button onclick="gameStart()">🚀 POST /games/{id}/start</button>
+    <button onclick="subGame()">👂 Subscribe /topic/game/{id}</button>
+  </div>
+  <div class="row">
+    <button onclick="wsSubmitAnswer()">✍️ WS SUBMIT_ANSWER</button>
+    <button onclick="wsSubmitVote()">🗳️ WS SUBMIT_VOTE</button>
+    <button onclick="wsPlayerReady()">🙋 WS PLAYER_READY</button>
+  </div>
+
   <!-- ─── ЛОГ ───────────────────────────────────────────────────────────── -->
-  <h3>7. Лог</h3>
+  <h3>8. Лог</h3>
   <button class="sm" onclick="clearLog()">Очистить</button>
   <div id="log"></div>
 
@@ -147,6 +182,7 @@
     let seatSub = null;
     let projectorSub = null;
     let pomodoroSub = null;
+    let gameSub = null;
 
     /* ── helpers ─────────────────────────────────────────────────── */
     const $ = id => document.getElementById(id);
@@ -156,6 +192,8 @@
     const prid = () => $('projectorRoomId').value.trim() || rid();
     const pridPomodoro = () => $('pomodoroRoomId').value.trim() || rid();
     const sid  = () => $('seatId').value.trim();
+    const grid = () => $('gameRoomId').value.trim() || rid();
+    const gid  = () => $('gameId').value.trim();
 
     function log(msg, cls = 'info') {
       const el = $('log');
@@ -238,6 +276,20 @@
       });
       log('👂 Subscribed: '+dest, 'out');
       log('Используй POST /pomodoro/start/pause/resume/skip/stop, чтобы увидеть события POMODORO_*.', 'info');
+    }
+
+    function subGame() {
+      if (!chk()) return;
+      const g = gid();
+      if (!g) { log('⚠️ Введи Game ID', 'err'); return; }
+      if (gameSub) gameSub.unsubscribe();
+      const dest = '/topic/game/' + g;
+      gameSub = stompClient.subscribe(dest, frame => {
+        const e = parseEvent(frame.body);
+        log('🎲 [' + e.type + '] ' + JSON.stringify(e.payload, null, 2), 'in');
+      });
+      log('👂 Subscribed: ' + dest, 'out');
+      log('Создай игру, поставь ready, start и отправляй WS действия.', 'info');
     }
 
     function parseEvent(body) {
@@ -407,6 +459,89 @@
       const r = pridPomodoro();
       if (!r) { log('⚠️ Нужен Room ID для помодоро', 'err'); return; }
       api('DELETE', `/api/rooms/${r}/pomodoro`);
+    }
+
+    /* ── ИГРЫ REST + WS ─────────────────────────────────────────────────── */
+
+    function gameCreate() {
+      const r = grid();
+      if (!r) { log('⚠️ Нужен Room ID для create game', 'err'); return; }
+      const gameType = $('gameType').value.trim().toUpperCase() || 'QUIPLASH';
+      const body = { gameType };
+      const url = `/api/rooms/${r}/games`;
+      log(`➡️ POST ${url} body=${JSON.stringify(body)}`, 'out');
+      fetch('http://localhost:8080' + url, {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + tok(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      }).then(async res => {
+        let txt = await res.text();
+        let parsed = null;
+        try { parsed = JSON.parse(txt); txt = JSON.stringify(parsed, null, 2); } catch(_) {}
+        log(`← ${res.status}: ${txt}`, res.ok ? 'in' : 'err');
+        if (parsed?.gameId) {
+          $('gameId').value = parsed.gameId;
+          log(`✅ Авто: gameId=${parsed.gameId}`, 'in');
+        }
+      }).catch(e => log('❌ ' + e, 'err'));
+    }
+
+    function gameCurrent() {
+      const r = grid();
+      if (!r) { log('⚠️ Нужен Room ID для current game', 'err'); return; }
+      const url = `/api/rooms/${r}/games/current`;
+      api('GET', url).then(resp => {
+        if (!resp?.ok) return;
+        try {
+          const parsed = JSON.parse(resp.text);
+          if (parsed?.gameId) $('gameId').value = parsed.gameId;
+        } catch (_) {}
+      });
+    }
+
+    function gameReady() {
+      const g = gid();
+      if (!g) { log('⚠️ Нужен Game ID', 'err'); return; }
+      api('POST', `/api/games/${g}/ready`);
+    }
+
+    function gameStart() {
+      const g = gid();
+      if (!g) { log('⚠️ Нужен Game ID', 'err'); return; }
+      api('POST', `/api/games/${g}/start`);
+    }
+
+    function wsPlayerReady() {
+      if (!chk()) return;
+      const g = gid();
+      if (!g) { log('⚠️ Нужен Game ID', 'err'); return; }
+      const payload = { type: 'PLAYER_READY', payload: {} };
+      const dest = `/app/game/${g}/action`;
+      log(`WS SEND ${dest}: ` + JSON.stringify(payload), 'out');
+      stompClient.send(dest, {}, JSON.stringify(payload));
+    }
+
+    function wsSubmitAnswer() {
+      if (!chk()) return;
+      const g = gid();
+      if (!g) { log('⚠️ Нужен Game ID', 'err'); return; }
+      const text = $('gameActionValue').value.trim() || '...';
+      const payload = { type: 'SUBMIT_ANSWER', payload: { text } };
+      const dest = `/app/game/${g}/action`;
+      log(`WS SEND ${dest}: ` + JSON.stringify(payload), 'out');
+      stompClient.send(dest, {}, JSON.stringify(payload));
+    }
+
+    function wsSubmitVote() {
+      if (!chk()) return;
+      const g = gid();
+      if (!g) { log('⚠️ Нужен Game ID', 'err'); return; }
+      const answerId = $('gameActionValue').value.trim();
+      if (!answerId) { log('⚠️ Введи answerId в поле Answer / Vote answerId', 'err'); return; }
+      const payload = { type: 'SUBMIT_VOTE', payload: { answerId } };
+      const dest = `/app/game/${g}/action`;
+      log(`WS SEND ${dest}: ` + JSON.stringify(payload), 'out');
+      stompClient.send(dest, {}, JSON.stringify(payload));
     }
   </script>
 </body>
