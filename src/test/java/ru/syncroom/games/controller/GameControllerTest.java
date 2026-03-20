@@ -122,6 +122,30 @@ class GameControllerTest {
                 .andExpect(status().isOk());
     }
 
+    @Test
+    @DisplayName("Create + start Gartic Phone game")
+    void createAndStartGartic() throws Exception {
+        String createResp = mockMvc.perform(post("/api/rooms/{roomId}/games", room.getId())
+                        .header("Authorization", "Bearer " + t1)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"gameType\":\"GARTIC_PHONE\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.gameType").value("GARTIC_PHONE"))
+                .andReturn().getResponse().getContentAsString();
+        String gameId = createResp.replaceAll("(?s).*\"gameId\"\\s*:\\s*\"([^\"]+)\".*", "$1");
+
+        mockMvc.perform(post("/api/games/{gameId}/ready", UUID.fromString(gameId)).header("Authorization", "Bearer " + t1))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/api/games/{gameId}/ready", UUID.fromString(gameId)).header("Authorization", "Bearer " + t2))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/api/games/{gameId}/ready", UUID.fromString(gameId)).header("Authorization", "Bearer " + t3))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/games/{gameId}/start", UUID.fromString(gameId))
+                        .header("Authorization", "Bearer " + t1))
+                .andExpect(status().isOk());
+    }
+
     private User createUser(String email) {
         return userRepository.save(User.builder()
                 .name(email)

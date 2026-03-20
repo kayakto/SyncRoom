@@ -29,12 +29,20 @@ public class GameService {
     private final QuiplashAnswerRepository answerRepository;
     private final QuiplashVoteRepository voteRepository;
     private final PromptBankRepository promptBankRepository;
+    private final GarticChainRepository garticChainRepository;
+    private final GarticStepRepository garticStepRepository;
     private final RoomRepository roomRepository;
     private final RoomParticipantRepository roomParticipantRepository;
     private final UserRepository userRepository;
     private final GameEventSender eventSender;
     private final GameTimerService gameTimerService;
     private static final int TOTAL_ROUNDS = 3;
+    private static final int GARTIC_TEXT_TIMEOUT_SEC = 60;
+    private static final int GARTIC_DRAW_TIMEOUT_SEC = 90;
+    private static final int GARTIC_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
+    private static final String DEFAULT_TEXT = "...";
+    private static final String WHITE_PNG_BASE64 = "data:image/png;base64,"
+            + "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMBAAZ9l1cAAAAASUVORK5CYII=";
 
     @Transactional
     public GameResponse createGame(UUID roomId, UUID creatorId, String gameType) {
@@ -107,6 +115,10 @@ public class GameService {
         }).toList();
         eventSender.sendToGame(gameId, "GAME_STARTED", Map.of("players", playersPayload));
 
+        if ("GARTIC_PHONE".equals(game.getGameType())) {
+            startGarticGame(game, players);
+            return;
+        }
         startRound(game, 1);
     }
 
@@ -123,6 +135,18 @@ public class GameService {
         }
         if ("SUBMIT_VOTE".equals(type)) {
             submitVote(gameId, userId, UUID.fromString(String.valueOf(msg.getPayload().get("answerId"))));
+            return;
+        }
+        if ("SUBMIT_PHRASE".equals(type)) {
+            submitGarticStep(gameId, userId, "TEXT", String.valueOf(msg.getPayload().getOrDefault("text", DEFAULT_TEXT)));
+            return;
+        }
+        if ("SUBMIT_GUESS".equals(type)) {
+            submitGarticStep(gameId, userId, "TEXT", String.valueOf(msg.getPayload().getOrDefault("text", DEFAULT_TEXT)));
+            return;
+        }
+        if ("SUBMIT_DRAWING".equals(type)) {
+            submitGarticStep(gameId, userId, "DRAWING", String.valueOf(msg.getPayload().getOrDefault("imageBase64", WHITE_PNG_BASE64)));
         }
     }
 
@@ -273,6 +297,198 @@ public class GameService {
                 startRound(session, round + 1);
             }
         });
+    }
+
+    private void startGarticGame(GameSession game, List<GamePlayer> players) {
+        List<GamePlayer> orderedPlayers = orderedPlayers(players);
+        for (GamePlayer player : orderedPlayers) {
+            garticChainRepository.save(GarticChain.builder()
+                    .game(game)
+                    .owner(player)
+                    .build());
+        }
+        sendGarticStepInstructions(game.getId(), orderedPlayers, 1);
+        scheduleGarticTimeout(game.getId(), 1);
+    }
+
+    private void submitGarticStep(UUID gameId, UUID userId, String submittedType, String submittedContent) {
+        GameSession game = gameSessionRepository.findById(gameId).orElseThrow(() -> new NotFoundException("Game not found"));
+        if (!"GARTIC_PHONE".equals(game.getGameType())) {
+            throw new BadRequestException("This action is only available for GARTIC_PHONE");
+        }
+        List<GamePlayer> orderedPlayers = orderedPlayers(gamePlayerRepository.findByGameId(gameId));
+        int playersCount = orderedPlayers.size();
+        int currentStep = detectCurrentGarticStep(gameId, playersCount);
+        if (currentStep > playersCount) {
+            return;
+        }
+        String expectedType = expectedGarticType(currentStep);
+        if (!expectedType.equals(submittedType)) {
+            throw new BadRequestException("Unexpected action for current step");
+        }
+        GamePlayer player = gamePlayerRepository.findByGameIdAndUserId(gameId, userId)
+                .orElseThrow(() -> new NotFoundException("Player not found"));
+        int playerIndex = indexOfPlayer(orderedPlayers, player.getId());
+        GarticChain assignedChain = resolveChainForPlayerStep(gameId, orderedPlayers, playerIndex, currentStep);
+        if (garticStepRepository.findByChainIdAndStepNumber(assignedChain.getId(), currentStep).isPresent()) {
+            eventSender.sendToPlayer(gameId, userId, "WAITING_FOR_OTHERS", Map.of("stepNumber", currentStep));
+            return;
+        }
+        String normalizedContent = normalizeGarticContent(expectedType, submittedContent);
+        garticStepRepository.save(GarticStep.builder()
+                .chain(assignedChain)
+                .player(player)
+                .stepNumber(currentStep)
+                .stepType(expectedType)
+                .content(normalizedContent)
+                .build());
+        finishOrAdvanceGartic(gameId, orderedPlayers, currentStep);
+    }
+
+    private void finishOrAdvanceGartic(UUID gameId, List<GamePlayer> orderedPlayers, int currentStep) {
+        long submitted = garticStepRepository.countByChainGameIdAndStepNumber(gameId, currentStep);
+        if (submitted < orderedPlayers.size()) {
+            return;
+        }
+        gameTimerService.cancel(garticStepKey(gameId, currentStep));
+        if (currentStep >= orderedPlayers.size()) {
+            revealAndFinishGartic(gameId);
+            return;
+        }
+        int nextStep = currentStep + 1;
+        sendGarticStepInstructions(gameId, orderedPlayers, nextStep);
+        scheduleGarticTimeout(gameId, nextStep);
+    }
+
+    private void onGarticStepTimeout(UUID gameId, int stepNumber) {
+        GameSession game = gameSessionRepository.findById(gameId).orElse(null);
+        if (game == null || !"IN_PROGRESS".equals(game.getStatus()) || !"GARTIC_PHONE".equals(game.getGameType())) {
+            return;
+        }
+        List<GamePlayer> orderedPlayers = orderedPlayers(gamePlayerRepository.findByGameId(gameId));
+        String expectedType = expectedGarticType(stepNumber);
+        for (int i = 0; i < orderedPlayers.size(); i++) {
+            GamePlayer player = orderedPlayers.get(i);
+            GarticChain chain = resolveChainForPlayerStep(gameId, orderedPlayers, i, stepNumber);
+            if (garticStepRepository.findByChainIdAndStepNumber(chain.getId(), stepNumber).isEmpty()) {
+                garticStepRepository.save(GarticStep.builder()
+                        .chain(chain)
+                        .player(player)
+                        .stepNumber(stepNumber)
+                        .stepType(expectedType)
+                        .content("DRAWING".equals(expectedType) ? WHITE_PNG_BASE64 : DEFAULT_TEXT)
+                        .build());
+            }
+        }
+        finishOrAdvanceGartic(gameId, orderedPlayers, stepNumber);
+    }
+
+    private void sendGarticStepInstructions(UUID gameId, List<GamePlayer> orderedPlayers, int stepNumber) {
+        String stepType = expectedGarticType(stepNumber);
+        for (int i = 0; i < orderedPlayers.size(); i++) {
+            GamePlayer player = orderedPlayers.get(i);
+            GarticChain chain = resolveChainForPlayerStep(gameId, orderedPlayers, i, stepNumber);
+            Map<String, Object> payload = new HashMap<>();
+            if ("DRAWING".equals(stepType)) {
+                String phrase = garticStepRepository.findByChainIdAndStepNumber(chain.getId(), stepNumber - 1)
+                        .map(GarticStep::getContent).orElse(DEFAULT_TEXT);
+                payload.put("phrase", phrase);
+                payload.put("timeLimit", GARTIC_DRAW_TIMEOUT_SEC);
+                eventSender.sendToPlayer(gameId, player.getUser().getId(), "STEP_DRAW", payload);
+            } else if (stepNumber == 1) {
+                payload.put("stepNumber", 1);
+                payload.put("timeLimit", GARTIC_TEXT_TIMEOUT_SEC);
+                eventSender.sendToPlayer(gameId, player.getUser().getId(), "STEP_WRITE", payload);
+            } else {
+                String imageBase64 = garticStepRepository.findByChainIdAndStepNumber(chain.getId(), stepNumber - 1)
+                        .map(GarticStep::getContent).orElse(WHITE_PNG_BASE64);
+                payload.put("imageBase64", imageBase64);
+                payload.put("timeLimit", GARTIC_TEXT_TIMEOUT_SEC);
+                eventSender.sendToPlayer(gameId, player.getUser().getId(), "STEP_GUESS", payload);
+            }
+        }
+    }
+
+    private void revealAndFinishGartic(UUID gameId) {
+        List<GarticChain> chains = garticChainRepository.findByGameId(gameId);
+        List<Map<String, Object>> chainsPayload = chains.stream().map(chain -> {
+            Map<String, Object> chainMap = new HashMap<>();
+            chainMap.put("ownerId", chain.getOwner().getUser().getId().toString());
+            chainMap.put("ownerName", chain.getOwner().getUser().getName());
+            List<Map<String, Object>> steps = garticStepRepository.findByChainIdOrderByStepNumberAsc(chain.getId()).stream()
+                    .map(step -> {
+                        Map<String, Object> stepMap = new HashMap<>();
+                        stepMap.put("playerId", step.getPlayer().getUser().getId().toString());
+                        stepMap.put("playerName", step.getPlayer().getUser().getName());
+                        stepMap.put("type", step.getStepType());
+                        stepMap.put("content", step.getContent());
+                        return stepMap;
+                    }).toList();
+            chainMap.put("steps", steps);
+            return chainMap;
+        }).toList();
+        eventSender.sendToGame(gameId, "REVEAL_CHAIN", Map.of("chains", chainsPayload));
+        eventSender.sendToGame(gameId, "GAME_FINISHED", Map.of("scores", List.of()));
+        GameSession game = gameSessionRepository.findById(gameId).orElseThrow(() -> new NotFoundException("Game not found"));
+        game.setStatus("FINISHED");
+        game.setFinishedAt(java.time.OffsetDateTime.now());
+        gameSessionRepository.save(game);
+    }
+
+    private int detectCurrentGarticStep(UUID gameId, int playersCount) {
+        Integer maxStep = garticStepRepository.findMaxStepByGameId(gameId);
+        if (maxStep == null) return 1;
+        long currentCount = garticStepRepository.countByChainGameIdAndStepNumber(gameId, maxStep);
+        return currentCount < playersCount ? maxStep : (maxStep + 1);
+    }
+
+    private List<GamePlayer> orderedPlayers(List<GamePlayer> players) {
+        return players.stream()
+                .sorted(Comparator.comparing(p -> p.getUser().getId().toString()))
+                .toList();
+    }
+
+    private int indexOfPlayer(List<GamePlayer> orderedPlayers, UUID gamePlayerId) {
+        for (int i = 0; i < orderedPlayers.size(); i++) {
+            if (orderedPlayers.get(i).getId().equals(gamePlayerId)) {
+                return i;
+            }
+        }
+        throw new NotFoundException("Player not found in game");
+    }
+
+    private GarticChain resolveChainForPlayerStep(UUID gameId, List<GamePlayer> orderedPlayers, int playerIndex, int stepNumber) {
+        int n = orderedPlayers.size();
+        int ownerIndex = (playerIndex - (stepNumber - 1) % n + n) % n;
+        GamePlayer owner = orderedPlayers.get(ownerIndex);
+        return garticChainRepository.findByGameIdAndOwnerId(gameId, owner.getId())
+                .orElseThrow(() -> new NotFoundException("Chain not found"));
+    }
+
+    private String expectedGarticType(int stepNumber) {
+        return stepNumber % 2 == 1 ? "TEXT" : "DRAWING";
+    }
+
+    private void scheduleGarticTimeout(UUID gameId, int stepNumber) {
+        int timeout = "DRAWING".equals(expectedGarticType(stepNumber)) ? GARTIC_DRAW_TIMEOUT_SEC : GARTIC_TEXT_TIMEOUT_SEC;
+        gameTimerService.schedule(garticStepKey(gameId, stepNumber), timeout, () -> onGarticStepTimeout(gameId, stepNumber));
+    }
+
+    private String garticStepKey(UUID gameId, int stepNumber) {
+        return "game:" + gameId + ":gartic:step:" + stepNumber;
+    }
+
+    private String normalizeGarticContent(String type, String content) {
+        String normalized = content == null || content.isBlank() ? ("DRAWING".equals(type) ? WHITE_PNG_BASE64 : DEFAULT_TEXT) : content;
+        if (!"DRAWING".equals(type)) {
+            return normalized;
+        }
+        int base64Part = normalized.contains(",") ? normalized.substring(normalized.indexOf(",") + 1).length() : normalized.length();
+        int approxBytes = (base64Part * 3) / 4;
+        if (approxBytes > GARTIC_IMAGE_MAX_BYTES) {
+            throw new BadRequestException("Drawing is too large (max 2MB)");
+        }
+        return normalized;
     }
 
     private GameResponse toResponse(GameSession session) {

@@ -4,6 +4,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentMatchers;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -11,6 +12,7 @@ import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.annotation.Transactional;
+import ru.syncroom.common.exception.BadRequestException;
 import ru.syncroom.games.domain.QuiplashAnswer;
 import ru.syncroom.games.domain.QuiplashPrompt;
 import ru.syncroom.games.dto.GameActionMessage;
@@ -32,9 +34,12 @@ import java.time.OffsetDateTime;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @SpringBootTest
 @ActiveProfiles("test")
@@ -68,6 +73,7 @@ class GameServiceWebSocketTest {
 
     private User u1, u2, u3;
     private Room room;
+    private final Map<String, Runnable> scheduledTasks = new ConcurrentHashMap<>();
 
     @BeforeEach
     void setUp() {
@@ -87,6 +93,7 @@ class GameServiceWebSocketTest {
         // Для теста полного flow: таймер перехода к следующему раунду запускаем сразу
         doAnswer(inv -> {
             String key = inv.getArgument(0, String.class);
+            scheduledTasks.put(key, inv.getArgument(2, Runnable.class));
             Runnable task = inv.getArgument(2, Runnable.class);
             if (key.contains(":next:")) task.run();
             return null;
@@ -112,6 +119,119 @@ class GameServiceWebSocketTest {
         playRound(gameId, u1.getId(), "c1", u2.getId(), "c2", u3.getId(), "c3");
 
         verify(gameEventSender, atLeastOnce()).sendToGame(eq(gameId), eq("GAME_FINISHED"), ArgumentMatchers.any());
+    }
+
+    @Test
+    @DisplayName("Gartic Phone завершает цепочки и отправляет REVEAL_CHAIN")
+    void garticFlowRevealsChainsAndFinishes() {
+        GameResponse game = gameService.createGame(room.getId(), u1.getId(), "GARTIC_PHONE");
+        UUID gameId = UUID.fromString(game.getGameId());
+
+        gameService.markReady(gameId, u1.getId());
+        gameService.markReady(gameId, u2.getId());
+        gameService.markReady(gameId, u3.getId());
+        gameService.startGame(gameId);
+
+        // step 1 (TEXT)
+        submitPhrase(gameId, u1.getId(), "p1");
+        submitPhrase(gameId, u2.getId(), "p2");
+        submitPhrase(gameId, u3.getId(), "p3");
+        // step 2 (DRAWING)
+        submitDrawing(gameId, u1.getId(), "data:image/png;base64,AA==");
+        submitDrawing(gameId, u2.getId(), "data:image/png;base64,AA==");
+        submitDrawing(gameId, u3.getId(), "data:image/png;base64,AA==");
+        // step 3 (TEXT guess)
+        submitGuess(gameId, u1.getId(), "g1");
+        submitGuess(gameId, u2.getId(), "g2");
+        submitGuess(gameId, u3.getId(), "g3");
+
+        verify(gameEventSender, atLeastOnce()).sendToGame(eq(gameId), eq("REVEAL_CHAIN"), ArgumentMatchers.any());
+        verify(gameEventSender, atLeastOnce()).sendToGame(eq(gameId), eq("GAME_FINISHED"), ArgumentMatchers.any());
+    }
+
+    @Test
+    @DisplayName("Gartic отклоняет слишком большой base64 рисунок")
+    void garticRejectsTooLargeDrawing() {
+        GameResponse game = gameService.createGame(room.getId(), u1.getId(), "GARTIC_PHONE");
+        UUID gameId = UUID.fromString(game.getGameId());
+        gameService.markReady(gameId, u1.getId());
+        gameService.markReady(gameId, u2.getId());
+        gameService.markReady(gameId, u3.getId());
+        gameService.startGame(gameId);
+
+        submitPhrase(gameId, u1.getId(), "p1");
+        submitPhrase(gameId, u2.getId(), "p2");
+        submitPhrase(gameId, u3.getId(), "p3");
+
+        String hugeBase64 = "data:image/png;base64," + "A".repeat(2_900_000);
+        assertThrows(BadRequestException.class, () -> submitDrawing(gameId, u1.getId(), hugeBase64));
+    }
+
+    @Test
+    @DisplayName("Gartic timeout подставляет default контент и завершает игру")
+    void garticTimeoutFillsDefaultsAndFinishes() {
+        GameResponse game = gameService.createGame(room.getId(), u1.getId(), "GARTIC_PHONE");
+        UUID gameId = UUID.fromString(game.getGameId());
+        gameService.markReady(gameId, u1.getId());
+        gameService.markReady(gameId, u2.getId());
+        gameService.markReady(gameId, u3.getId());
+        gameService.startGame(gameId);
+
+        runScheduled(gameId, 1);
+        runScheduled(gameId, 2);
+        runScheduled(gameId, 3);
+
+        verify(gameEventSender, atLeastOnce()).sendToGame(eq(gameId), eq("REVEAL_CHAIN"), ArgumentMatchers.any());
+        verify(gameEventSender, atLeastOnce()).sendToGame(eq(gameId), eq("GAME_FINISHED"), ArgumentMatchers.any());
+    }
+
+    @Test
+    @DisplayName("Gartic отправляет персональные STEP_WRITE -> STEP_DRAW -> STEP_GUESS через sendToPlayer")
+    void garticSendsPersonalStepSequenceViaSendToPlayer() {
+        GameResponse game = gameService.createGame(room.getId(), u1.getId(), "GARTIC_PHONE");
+        UUID gameId = UUID.fromString(game.getGameId());
+
+        gameService.markReady(gameId, u1.getId());
+        gameService.markReady(gameId, u2.getId());
+        gameService.markReady(gameId, u3.getId());
+        gameService.startGame(gameId);
+
+        submitPhrase(gameId, u1.getId(), "p1");
+        submitPhrase(gameId, u2.getId(), "p2");
+        submitPhrase(gameId, u3.getId(), "p3");
+
+        submitDrawing(gameId, u1.getId(), "data:image/png;base64,AA==");
+        submitDrawing(gameId, u2.getId(), "data:image/png;base64,AA==");
+        submitDrawing(gameId, u3.getId(), "data:image/png;base64,AA==");
+
+        ArgumentCaptor<UUID> gameIdCaptor = ArgumentCaptor.forClass(UUID.class);
+        ArgumentCaptor<UUID> userIdCaptor = ArgumentCaptor.forClass(UUID.class);
+        ArgumentCaptor<String> typeCaptor = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<Map<String, Object>> payloadCaptor = ArgumentCaptor.forClass((Class) Map.class);
+
+        verify(gameEventSender, atLeast(9))
+                .sendToPlayer(gameIdCaptor.capture(), userIdCaptor.capture(), typeCaptor.capture(), payloadCaptor.capture());
+
+        boolean hasWriteForU1 = false;
+        boolean hasDrawForU1 = false;
+        boolean hasGuessForU1 = false;
+
+        var gameIds = gameIdCaptor.getAllValues();
+        var userIds = userIdCaptor.getAllValues();
+        var types = typeCaptor.getAllValues();
+
+        for (int i = 0; i < types.size(); i++) {
+            if (!gameId.equals(gameIds.get(i))) continue;
+            if (!u1.getId().equals(userIds.get(i))) continue;
+            String t = types.get(i);
+            if ("STEP_WRITE".equals(t)) hasWriteForU1 = true;
+            if ("STEP_DRAW".equals(t)) hasDrawForU1 = true;
+            if ("STEP_GUESS".equals(t)) hasGuessForU1 = true;
+        }
+
+        assertTrue(hasWriteForU1, "u1 should receive STEP_WRITE");
+        assertTrue(hasDrawForU1, "u1 should receive STEP_DRAW");
+        assertTrue(hasGuessForU1, "u1 should receive STEP_GUESS");
     }
 
     private void playRound(UUID gameId, UUID p1, String a1, UUID p2, String a2, UUID p3, String a3) {
@@ -150,6 +270,41 @@ class GameServiceWebSocketTest {
         payload.put("answerId", answerId.toString());
         msg.setPayload(payload);
         gameService.handleAction(gameId, userId, msg);
+    }
+
+    private void submitPhrase(UUID gameId, UUID userId, String text) {
+        GameActionMessage msg = new GameActionMessage();
+        msg.setType("SUBMIT_PHRASE");
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("text", text);
+        msg.setPayload(payload);
+        gameService.handleAction(gameId, userId, msg);
+    }
+
+    private void submitGuess(UUID gameId, UUID userId, String text) {
+        GameActionMessage msg = new GameActionMessage();
+        msg.setType("SUBMIT_GUESS");
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("text", text);
+        msg.setPayload(payload);
+        gameService.handleAction(gameId, userId, msg);
+    }
+
+    private void submitDrawing(UUID gameId, UUID userId, String imageBase64) {
+        GameActionMessage msg = new GameActionMessage();
+        msg.setType("SUBMIT_DRAWING");
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("imageBase64", imageBase64);
+        msg.setPayload(payload);
+        gameService.handleAction(gameId, userId, msg);
+    }
+
+    private void runScheduled(UUID gameId, int step) {
+        String key = "game:" + gameId + ":gartic:step:" + step;
+        Runnable task = scheduledTasks.get(key);
+        if (task != null) {
+            task.run();
+        }
     }
 
     private User createUser(String email) {

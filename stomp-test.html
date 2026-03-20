@@ -134,8 +134,8 @@
     <button onclick="subPomodoro()">👂 Subscribe /pomodoro</button>
   </div>
 
-  <!-- ─── ИГРЫ (QUIPLASH) ───────────────────────────────────────────────── -->
-  <h3>7. Игры (Quiplash)</h3>
+  <!-- ─── ИГРЫ (QUIPLASH + GARTIC) ──────────────────────────────────────── -->
+  <h3>7. Игры (Quiplash + Gartic Phone)</h3>
   <div class="grid2">
     <div>
       <label>Room ID (для создания игры)</label>
@@ -156,6 +156,16 @@
       <input id="gameActionValue" placeholder="text для SUBMIT_ANSWER или answerId для SUBMIT_VOTE" />
     </div>
   </div>
+  <div class="grid2">
+    <div>
+      <label>Gartic text (SUBMIT_PHRASE / SUBMIT_GUESS)</label>
+      <input id="garticTextValue" placeholder="Кот в космосе ест пиццу" />
+    </div>
+    <div>
+      <label>Gartic drawing base64 (SUBMIT_DRAWING)</label>
+      <input id="garticDrawingValue" value="data:image/png;base64,AA==" />
+    </div>
+  </div>
   <div class="row">
     <button class="green" onclick="gameCreate()">🎮 POST /games (create)</button>
     <button onclick="gameCurrent()">📋 GET /games/current</button>
@@ -167,6 +177,9 @@
     <button onclick="wsSubmitAnswer()">✍️ WS SUBMIT_ANSWER</button>
     <button onclick="wsSubmitVote()">🗳️ WS SUBMIT_VOTE</button>
     <button onclick="wsPlayerReady()">🙋 WS PLAYER_READY</button>
+    <button onclick="wsSubmitPhrase()">📝 WS SUBMIT_PHRASE</button>
+    <button onclick="wsSubmitDrawing()">🎨 WS SUBMIT_DRAWING</button>
+    <button onclick="wsSubmitGuess()">🔎 WS SUBMIT_GUESS</button>
   </div>
 
   <!-- ─── ЛОГ ───────────────────────────────────────────────────────────── -->
@@ -539,6 +552,39 @@
       const answerId = $('gameActionValue').value.trim();
       if (!answerId) { log('⚠️ Введи answerId в поле Answer / Vote answerId', 'err'); return; }
       const payload = { type: 'SUBMIT_VOTE', payload: { answerId } };
+      const dest = `/app/game/${g}/action`;
+      log(`WS SEND ${dest}: ` + JSON.stringify(payload), 'out');
+      stompClient.send(dest, {}, JSON.stringify(payload));
+    }
+
+    function wsSubmitPhrase() {
+      if (!chk()) return;
+      const g = gid();
+      if (!g) { log('⚠️ Нужен Game ID', 'err'); return; }
+      const text = $('garticTextValue').value.trim() || '...';
+      const payload = { type: 'SUBMIT_PHRASE', payload: { text } };
+      const dest = `/app/game/${g}/action`;
+      log(`WS SEND ${dest}: ` + JSON.stringify(payload), 'out');
+      stompClient.send(dest, {}, JSON.stringify(payload));
+    }
+
+    function wsSubmitDrawing() {
+      if (!chk()) return;
+      const g = gid();
+      if (!g) { log('⚠️ Нужен Game ID', 'err'); return; }
+      const imageBase64 = $('garticDrawingValue').value.trim() || 'data:image/png;base64,AA==';
+      const payload = { type: 'SUBMIT_DRAWING', payload: { imageBase64 } };
+      const dest = `/app/game/${g}/action`;
+      log(`WS SEND ${dest}: ` + JSON.stringify(payload), 'out');
+      stompClient.send(dest, {}, JSON.stringify(payload));
+    }
+
+    function wsSubmitGuess() {
+      if (!chk()) return;
+      const g = gid();
+      if (!g) { log('⚠️ Нужен Game ID', 'err'); return; }
+      const text = $('garticTextValue').value.trim() || '...';
+      const payload = { type: 'SUBMIT_GUESS', payload: { text } };
       const dest = `/app/game/${g}/action`;
       log(`WS SEND ${dest}: ` + JSON.stringify(payload), 'out');
       stompClient.send(dest, {}, JSON.stringify(payload));

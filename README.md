@@ -214,7 +214,7 @@ POST /api/rooms/{roomId}/tasks
 }
 ```
 
-### Games — Quiplash (Smekhlest)
+### Games — Quiplash + Gartic Phone
 
 | Метод | URL | Описание |
 |-------|-----|----------|
@@ -230,6 +230,10 @@ POST /api/rooms/{roomId}/tasks
   "gameType": "QUIPLASH"
 }
 ```
+
+`gameType` может быть:
+- `QUIPLASH`
+- `GARTIC_PHONE`
 
 **Create game response:**
 
@@ -269,7 +273,7 @@ Authorization:Bearer <accessToken>
 | `/topic/room/{roomId}/seats` | `SEAT_TAKEN`, `SEAT_LEFT` ✨ |
 | `/topic/room/{roomId}/projector` | `PROJECTOR_STARTED`, `PROJECTOR_STOPPED`, `PROJECTOR_CONTROL`, `STREAM_LIVE`, `STREAM_OFFLINE` ✨ |
 | `/topic/room/{roomId}/pomodoro` | `POMODORO_STARTED`, `POMODORO_PHASE_CHANGED`, `POMODORO_PAUSED`, `POMODORO_RESUMED`, `POMODORO_STOPPED` ✨ |
-| `/topic/game/{gameId}` | `GAME_STARTED`, `PROMPT_RECEIVED`, `WAITING_FOR_OTHERS`, `WAITING_FOR_VOTES`, `ROUND_RESULT`, `GAME_FINISHED` ✨ |
+| `/topic/game/{gameId}` | Quiplash: `GAME_STARTED`, `PROMPT_RECEIVED`, `WAITING_FOR_OTHERS`, `WAITING_FOR_VOTES`, `ROUND_RESULT`, `GAME_FINISHED`; Gartic: `STEP_WRITE`, `STEP_DRAW`, `STEP_GUESS`, `REVEAL_CHAIN`, `GAME_FINISHED` ✨ |
 
 ### Управление проектором (STOMP)
 
@@ -331,6 +335,10 @@ destination:/app/room/{roomId}/projector/control
 | `WAITING_FOR_VOTES` | `.../game/{id}` | собраны ответы | `{ promptId, answers[], timeLimit }` |
 | `ROUND_RESULT` | `.../game/{id}` | завершено голосование раунда | `{ round, results[], scores[] }` |
 | `GAME_FINISHED` | `.../game/{id}` | завершен 3-й раунд | `{ scores[] }` |
+| `STEP_WRITE` | `.../game/{id}` | старт шага Gartic (первый текст) | `{ stepNumber, timeLimit: 60 }` |
+| `STEP_DRAW` | `.../game/{id}` | шаг рисования в Gartic | `{ phrase, timeLimit: 90 }` |
+| `STEP_GUESS` | `.../game/{id}` | шаг угадывания в Gartic | `{ imageBase64, timeLimit: 60 }` |
+| `REVEAL_CHAIN` | `.../game/{id}` | окончание Gartic, показ цепочек | `{ chains[] }` |
 
 ### Тестирование WebSocket
 
@@ -339,7 +347,9 @@ destination:/app/room/{roomId}/projector/control
 2. Нажми **GET /api/rooms** — авто-заполнит roomId и первый свободный seatId
 3. **Subscribe /seats** → **POST /sit** → увидишь `SEAT_TAKEN`
 4. В блоке **Проектор**: заполни Room ID, mode / URL, нажми **POST /projector (start)** и **👂 Subscribe /projector** — в логе появятся события проектора.
-5. В блоке **Игры (Quiplash)**: создай игру, подпишись на `/topic/game/{gameId}`, вызови ready/start и отправляй `SUBMIT_ANSWER` / `SUBMIT_VOTE` через WS.
+5. В блоке **Игры**:
+   - **Quiplash**: `gameType=QUIPLASH`, отправляй `SUBMIT_ANSWER` / `SUBMIT_VOTE`;
+   - **Gartic Phone**: `gameType=GARTIC_PHONE`, отправляй `SUBMIT_PHRASE` / `SUBMIT_DRAWING` / `SUBMIT_GUESS`.
 
 > Postman WebSocket tab не подходит для STOMP — используй `stomp-test.html`.
 
@@ -390,6 +400,7 @@ V6 — создание projector_sessions (проектор-стрим)
 V7 — создание pomodoro_sessions и study_tasks
 V8 — добавление полей paused_phase и remaining_seconds к pomodoro_sessions
 V9 — создание game_sessions, game_players, quiplash_* и prompt_bank
+V10 — создание gartic_chains и gartic_steps
 ```
 
 ---
@@ -411,9 +422,9 @@ gradle test
 | `ProjectorControllerTest` | REST + SRS callback для проектора | 7 |
 | `PomodoroControllerTest` | REST для помодоро | 6 |
 | `StudyTaskControllerTest` | REST для учебных тасков | 4 |
-| `GameControllerTest` | REST сценарии игр (create/current/ready/start) | 2 |
-| `GameServiceWebSocketTest` | 3-раундовый Quiplash flow до GAME_FINISHED | 1 |
-| **Итого** | | **121** |
+| `GameControllerTest` | REST сценарии игр (create/current/ready/start, включая Gartic) | 3 |
+| `GameServiceWebSocketTest` | Quiplash + Gartic WS flow, валидации и таймауты | 4 |
+| **Итого** | | **125** |
 
 Тесты используют H2 in-memory БД, `@MockitoBean SimpMessagingTemplate` (Spring Boot 3.4+), Redis не требуется.
 

@@ -860,6 +860,79 @@ data class CreateGameRequest(val gameType: String = "QUIPLASH")
 - Автопереход между раундами: 5 сек.
 - После 3-го раунда сервер шлёт `GAME_FINISHED`.
 
+---
+
+## 10. Игры (Gartic Phone) — инструкция для Android
+
+### 10.1. REST API
+
+Для создания/старта используются те же эндпоинты:
+
+```text
+POST /api/rooms/{roomId}/games      // body: { "gameType": "GARTIC_PHONE" }
+GET  /api/rooms/{roomId}/games/current
+POST /api/games/{gameId}/ready
+POST /api/games/{gameId}/start
+```
+
+### 10.2. WebSocket события (подписка `/topic/game/{gameId}`)
+
+- `GAME_STARTED`
+- `STEP_WRITE` — первый шаг, написать фразу (`timeLimit: 60`)
+- `STEP_DRAW` — нарисовать по фразе (`timeLimit: 90`)
+- `STEP_GUESS` — угадать по рисунку (`timeLimit: 60`)
+- `WAITING_FOR_OTHERS`
+- `REVEAL_CHAIN` — финальный показ всех цепочек
+- `GAME_FINISHED` — завершение игры, `scores: []`
+
+Пример:
+
+```json
+{
+  "type": "STEP_DRAW",
+  "payload": {
+    "phrase": "Кот в космосе ест пиццу",
+    "timeLimit": 90
+  },
+  "timestamp": "2026-03-20T12:00:00Z"
+}
+```
+
+### 10.3. Действия клиента (SEND `/app/game/{gameId}/action`)
+
+```json
+{ "type": "SUBMIT_PHRASE",  "payload": { "text": "Кот в космосе ест пиццу" } }
+```
+
+```json
+{ "type": "SUBMIT_DRAWING", "payload": { "imageBase64": "data:image/png;base64,..." } }
+```
+
+```json
+{ "type": "SUBMIT_GUESS",   "payload": { "text": "Космонавт-кот обедает" } }
+```
+
+### 10.4. Важные правила backend
+
+- Минимум 3 игрока для старта.
+- Шагов столько же, сколько игроков.
+- Чередование шагов: `TEXT -> DRAWING -> TEXT -> ...`.
+- Таймауты:
+  - текстовый шаг (`STEP_WRITE`, `STEP_GUESS`) -> `...`
+  - шаг рисования (`STEP_DRAW`) -> белый PNG.
+- Ограничение на рисунок: примерно до 2 MB base64 payload.
+
+### 10.5. Пример Kotlin модели события
+
+```kotlin
+@Serializable
+data class GameEventEnvelope(
+    val type: String,
+    val payload: JsonObject,
+    val timestamp: String
+)
+```
+
 # SyncRoom — Документация для Android разработчика
 
 > Актуальное состояние backend API. Все эндпоинты требуют `Authorization: Bearer <accessToken>`, кроме `/api/auth/*`.
