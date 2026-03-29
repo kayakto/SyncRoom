@@ -182,8 +182,26 @@
     <button onclick="wsSubmitGuess()">🔎 WS SUBMIT_GUESS</button>
   </div>
 
+  <!-- ─── ЧАТ КОМНАТЫ ───────────────────────────────────────────────────── -->
+  <h3>8. Чат комнаты</h3>
+  <div class="grid2">
+    <div>
+      <label>Текст сообщения (REST + WS)</label>
+      <input id="chatMessageText" value="Привет из stomp-test!" />
+    </div>
+    <div>
+      <label>page / size (только GET history)</label>
+      <input id="chatPageSize" value="0,50" placeholder="0,50" />
+    </div>
+  </div>
+  <div class="row">
+    <button onclick="chatHistory()">📜 GET /messages (history)</button>
+    <button onclick="subChat()">👂 Subscribe /topic/room/{roomId}/chat</button>
+    <button class="green" onclick="chatSendWs()">💬 WS SEND /app/room/{roomId}/chat</button>
+  </div>
+
   <!-- ─── ЛОГ ───────────────────────────────────────────────────────────── -->
-  <h3>8. Лог</h3>
+  <h3>9. Лог</h3>
   <button class="sm" onclick="clearLog()">Очистить</button>
   <div id="log"></div>
 
@@ -196,6 +214,7 @@
     let projectorSub = null;
     let pomodoroSub = null;
     let gameSub = null;
+    let chatSub = null;
 
     /* ── helpers ─────────────────────────────────────────────────── */
     const $ = id => document.getElementById(id);
@@ -289,6 +308,44 @@
       });
       log('👂 Subscribed: '+dest, 'out');
       log('Используй POST /pomodoro/start/pause/resume/skip/stop, чтобы увидеть события POMODORO_*.', 'info');
+    }
+
+    function subChat() {
+      if (!chk()) return;
+      const r = rid();
+      if (!r) { log('⚠️ Введи Room ID', 'err'); return; }
+      if (chatSub) chatSub.unsubscribe();
+      const dest = '/topic/room/' + r + '/chat';
+      chatSub = stompClient.subscribe(dest, frame => {
+        log('💬 [chat] ' + frame.body, 'in');
+      });
+      log('👂 Subscribed: ' + dest, 'out');
+      log('Сперва POST /join в эту комнату. Сообщения приходят как JSON: id, userId, userName, text, createdAt.', 'info');
+    }
+
+    function chatHistory() {
+      const r = rid();
+      if (!r) { log('⚠️ Введи Room ID', 'err'); return; }
+      let page = 0, size = 50;
+      const ps = $('chatPageSize').value.trim();
+      if (ps) {
+        const parts = ps.split(',').map(x => parseInt(x.trim(), 10));
+        if (!isNaN(parts[0])) page = parts[0];
+        if (parts.length > 1 && !isNaN(parts[1])) size = parts[1];
+      }
+      api('GET', `/api/rooms/${r}/messages?page=${page}&size=${size}`);
+    }
+
+    function chatSendWs() {
+      if (!chk()) return;
+      const r = rid();
+      if (!r) { log('⚠️ Введи Room ID', 'err'); return; }
+      const text = $('chatMessageText').value.trim();
+      if (!text) { log('⚠️ Пустой текст', 'err'); return; }
+      const dest = '/app/room/' + r + '/chat';
+      const payload = { text };
+      log('WS SEND ' + dest + ': ' + JSON.stringify(payload), 'out');
+      stompClient.send(dest, {}, JSON.stringify(payload));
     }
 
     function subGame() {

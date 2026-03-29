@@ -933,6 +933,91 @@ data class GameEventEnvelope(
 )
 ```
 
+---
+
+## 11. Чат комнаты
+
+### REST
+
+```text
+GET /api/rooms/{roomId}/messages?page=0&size=50
+Authorization: Bearer <accessToken>
+```
+
+Ответ:
+
+```json
+{
+  "content": [
+    { "id": "uuid", "userId": "uuid", "userName": "Аня", "text": "Привет!", "createdAt": "2026-03-29T12:00:00+03:00" }
+  ],
+  "totalPages": 1
+}
+```
+
+Доступ только для участников комнаты (`POST .../join`). Порядок элементов в `content` на странице — **хронологический** (старые выше, новые ниже).
+
+### WebSocket (STOMP)
+
+**Подписка (все сообщения чата):**
+
+```text
+SUBSCRIBE
+destination:/topic/room/{roomId}/chat
+```
+
+Тело кадра — один JSON-объект сообщения (без envelope):
+
+```json
+{
+  "id": "uuid",
+  "userId": "uuid",
+  "userName": "Аня",
+  "text": "Привет!",
+  "createdAt": "2026-03-29T12:00:00+03:00"
+}
+```
+
+**Отправка сообщения:**
+
+```text
+SEND
+destination:/app/room/{roomId}/chat
+
+{ "text": "Привет!" }
+```
+
+### Kotlin
+
+```kotlin
+@Serializable
+data class ChatMessageDto(
+    val id: String,
+    val userId: String,
+    val userName: String,
+    val text: String,
+    val createdAt: String
+)
+
+@Serializable
+data class PagedChatMessagesDto(
+    val content: List<ChatMessageDto>,
+    val totalPages: Int
+)
+```
+
+Расширение Retrofit:
+
+```kotlin
+@GET("/api/rooms/{roomId}/messages")
+suspend fun getRoomMessages(
+    @Path("roomId") roomId: String,
+    @Header("Authorization") token: String,
+    @Query("page") page: Int = 0,
+    @Query("size") size: Int = 50
+): PagedChatMessagesDto
+```
+
 # SyncRoom — Документация для Android разработчика
 
 > Актуальное состояние backend API. Все эндпоинты требуют `Authorization: Bearer <accessToken>`, кроме `/api/auth/*`.

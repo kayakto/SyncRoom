@@ -86,11 +86,29 @@ APP_PORT=8080
 | GET | `/api/rooms/my` | Комнаты текущего пользователя |
 | POST | `/api/rooms/{id}/join` | Войти → `{ room, participants[] }` |
 | POST | `/api/rooms/{id}/leave` | Выйти → 204, авто-освобождает место |
+| GET | `/api/rooms/{roomId}/messages` | История чата комнаты (`?page=0&size=50`) |
 
 > **Правило:** 1 пользователь = 1 комната одновременно.  
 > При заполнении комнаты автоматически создаётся новая с теми же параметрами.
 
 **Структура комнаты** включает `backgroundPicture` и `seats[]` (с нормализованными координатами 0.0–1.0).
+
+**Чат комнаты** (любой `context`, активная или пассивная комната):
+
+- Историю может запросить только участник комнаты.
+- В теле страницы `content[]` сообщения отсортированы по времени **от старых к новым** (в пределах страницы).
+- Новые сообщения отправляются через WebSocket (см. ниже), дублируются в БД и рассылаются подписчикам `/topic/room/{roomId}/chat` **объектом сообщения** (без обёртки `type`/`payload`).
+
+Пример ответа `GET /api/rooms/{roomId}/messages?page=0&size=50`:
+
+```json
+{
+  "content": [
+    { "id": "uuid", "userId": "uuid", "userName": "Аня", "text": "Привет!", "createdAt": "2026-03-29T12:00:00+03:00" }
+  ],
+  "totalPages": 1
+}
+```
 
 ### Seats — места в комнате ✨
 
@@ -273,6 +291,7 @@ Authorization:Bearer <accessToken>
 | `/topic/room/{roomId}/seats` | `SEAT_TAKEN`, `SEAT_LEFT` ✨ |
 | `/topic/room/{roomId}/projector` | `PROJECTOR_STARTED`, `PROJECTOR_STOPPED`, `PROJECTOR_CONTROL`, `STREAM_LIVE`, `STREAM_OFFLINE` ✨ |
 | `/topic/room/{roomId}/pomodoro` | `POMODORO_STARTED`, `POMODORO_PHASE_CHANGED`, `POMODORO_PAUSED`, `POMODORO_RESUMED`, `POMODORO_STOPPED` ✨ |
+| `/topic/room/{roomId}/chat` | Сообщения чата: JSON `{ id, userId, userName, text, createdAt }` |
 | `/topic/game/{gameId}` | Quiplash: `GAME_STARTED`, `PROMPT_RECEIVED`, `WAITING_FOR_OTHERS`, `WAITING_FOR_VOTES`, `ROUND_RESULT`, `GAME_FINISHED`; Gartic: `STEP_WRITE`, `STEP_DRAW`, `STEP_GUESS`, `REVEAL_CHAIN`, `GAME_FINISHED` ✨ |
 
 ### Управление проектором (STOMP)
@@ -350,6 +369,7 @@ destination:/app/room/{roomId}/projector/control
 5. В блоке **Игры**:
    - **Quiplash**: `gameType=QUIPLASH`, отправляй `SUBMIT_ANSWER` / `SUBMIT_VOTE`;
    - **Gartic Phone**: `gameType=GARTIC_PHONE`, отправляй `SUBMIT_PHRASE` / `SUBMIT_DRAWING` / `SUBMIT_GUESS`.
+6. В блоке **Чат**: `POST /join` в комнату → **GET /messages** и **Subscribe `/topic/room/{roomId}/chat`** → **WS SEND** `/app/room/{roomId}/chat` с `{ "text": "..." }`.
 
 > Postman WebSocket tab не подходит для STOMP — используй `stomp-test.html`.
 
@@ -363,12 +383,12 @@ src/main/java/ru/syncroom/
 ├── users/          # Профиль пользователя
 ├── points/         # Точки на карте (CRUD)
 ├── rooms/
-│   ├── controller/ # REST: /api/rooms, /api/rooms/{id}/seats
-│   ├── service/    # RoomService, SeatService (бизнес-логика + WS-события)
+│   ├── controller/ # REST: /api/rooms, /api/rooms/{id}/seats, /api/rooms/{id}/messages (чат)
+│   ├── service/    # RoomService, SeatService, RoomChatService
 │   ├── dto/        # RoomResponse (с seats[]), SeatDto, JoinRoomResponse
-│   ├── domain/     # Room, RoomParticipant, Seat (JPA)
-│   ├── repository/ # RoomRepository, SeatRepository
-│   └── ws/         # RoomEvent, RoomEventType, SeatTakenPayload, SeatLeftPayload
+│   ├── domain/     # Room, RoomParticipant, Seat, RoomMessage (JPA)
+│   ├── repository/ # RoomRepository, SeatRepository, RoomMessageRepository
+│   └── ws/         # RoomEvent, RoomChatWsController, SeatTakenPayload, SeatLeftPayload
 ├── projector/
 │   ├── controller/ # REST: /api/rooms/{roomId}/projector, SRS callback
 │   ├── service/    # ProjectorService (EMBED/STREAM, WS-события)
@@ -401,6 +421,7 @@ V7 — создание pomodoro_sessions и study_tasks
 V8 — добавление полей paused_phase и remaining_seconds к pomodoro_sessions
 V9 — создание game_sessions, game_players, quiplash_* и prompt_bank
 V10 — создание gartic_chains и gartic_steps
+V11 — создание room_messages (чат комнат)
 ```
 
 ---
@@ -424,7 +445,9 @@ gradle test
 | `StudyTaskControllerTest` | REST для учебных тасков | 4 |
 | `GameControllerTest` | REST сценарии игр (create/current/ready/start, включая Gartic) | 3 |
 | `GameServiceWebSocketTest` | Quiplash + Gartic WS flow, валидации и таймауты | 4 |
-| **Итого** | | **125** |
+| `RoomChatControllerTest` | История чата: пагинация, пустой список, два автора, доступ | 7 |
+| `RoomChatServiceTest` | Валидация, trim, пагинация, broadcast, граница 4000 символов | 9 |
+| **Итого** | | **141** |
 
 Тесты используют H2 in-memory БД, `@MockitoBean SimpMessagingTemplate` (Spring Boot 3.4+), Redis не требуется.
 
