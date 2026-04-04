@@ -27,6 +27,7 @@ import java.util.UUID;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.hamcrest.Matchers.hasSize;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -144,6 +145,69 @@ class GameControllerTest {
         mockMvc.perform(post("/api/games/{gameId}/start", UUID.fromString(gameId))
                         .header("Authorization", "Bearer " + t1))
                 .andExpect(status().isOk());
+    }
+
+    @Test
+    @DisplayName("POST unready снимает готовность — старт снова запрещён")
+    void unreadyBlocksStartUntilAllReadyAgain() throws Exception {
+        String gameId = extractGameId(mockMvc.perform(post("/api/rooms/{roomId}/games", room.getId())
+                        .header("Authorization", "Bearer " + t1)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"gameType\":\"QUIPLASH\"}"))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString());
+        UUID gid = UUID.fromString(gameId);
+
+        mockMvc.perform(post("/api/games/{gameId}/ready", gid).header("Authorization", "Bearer " + t1)).andExpect(status().isOk());
+        mockMvc.perform(post("/api/games/{gameId}/ready", gid).header("Authorization", "Bearer " + t2)).andExpect(status().isOk());
+        mockMvc.perform(post("/api/games/{gameId}/ready", gid).header("Authorization", "Bearer " + t3)).andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/games/{gameId}/unready", gid).header("Authorization", "Bearer " + t1)).andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/games/{gameId}/start", gid).header("Authorization", "Bearer " + t1))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @DisplayName("POST leave — выход из лобби, игрок исчезает из списка")
+    void leaveLobbyRemovesPlayer() throws Exception {
+        String gameId = extractGameId(mockMvc.perform(post("/api/rooms/{roomId}/games", room.getId())
+                        .header("Authorization", "Bearer " + t1)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"gameType\":\"QUIPLASH\"}"))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString());
+        UUID gid = UUID.fromString(gameId);
+
+        mockMvc.perform(post("/api/games/{gameId}/ready", gid).header("Authorization", "Bearer " + t2)).andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/games/{gameId}/leave", gid).header("Authorization", "Bearer " + t2)).andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/rooms/{roomId}/games/current", room.getId()).header("Authorization", "Bearer " + t1))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.players", hasSize(1)));
+    }
+
+    @Test
+    @DisplayName("POST /rooms/.../leave очищает лобби-игру, если вышел последний игрок")
+    void leaveRoomClearsGameWhenCreatorLeavesAndWasSolePlayer() throws Exception {
+        mockMvc.perform(post("/api/rooms/{roomId}/games", room.getId())
+                        .header("Authorization", "Bearer " + t1)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"gameType\":\"QUIPLASH\"}"))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(post("/api/rooms/{roomId}/leave", room.getId())
+                        .header("Authorization", "Bearer " + t1))
+                .andExpect(status().isNoContent());
+
+        mockMvc.perform(get("/api/rooms/{roomId}/games/current", room.getId())
+                        .header("Authorization", "Bearer " + t2))
+                .andExpect(status().isNotFound());
+    }
+
+    private static String extractGameId(String createResp) {
+        return createResp.replaceAll("(?s).*\"gameId\"\\s*:\\s*\"([^\"]+)\".*", "$1");
     }
 
     private User createUser(String email) {

@@ -5,6 +5,7 @@ import org.springframework.messaging.handler.annotation.DestinationVariable;
 import org.springframework.messaging.handler.annotation.MessageMapping;
 import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.stereotype.Controller;
+import ru.syncroom.common.config.WebSocketSecurityConfig;
 import ru.syncroom.common.exception.BadRequestException;
 import ru.syncroom.rooms.dto.ChatSendPayload;
 import ru.syncroom.rooms.service.RoomChatService;
@@ -27,10 +28,21 @@ public class RoomChatWsController {
             @Payload ChatSendPayload payload,
             Principal principal
     ) {
+        UUID uid = resolveUserId(principal);
+        roomChatService.sendMessage(UUID.fromString(roomId), uid, payload != null ? payload.getText() : null);
+    }
+
+    private static UUID resolveUserId(Principal principal) {
         if (principal == null) {
             throw new BadRequestException("STOMP authentication required");
         }
-        UUID uid = UUID.fromString(principal.getName());
-        roomChatService.sendMessage(UUID.fromString(roomId), uid, payload != null ? payload.getText() : null);
+        if (principal instanceof WebSocketSecurityConfig.StompPrincipal sp) {
+            return sp.user().getId();
+        }
+        try {
+            return UUID.fromString(principal.getName());
+        } catch (IllegalArgumentException e) {
+            throw new BadRequestException("STOMP principal must carry user id (use JWT on CONNECT)");
+        }
     }
 }

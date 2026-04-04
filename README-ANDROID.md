@@ -689,8 +689,12 @@ interface SyncRoomApi {
 POST /api/rooms/{roomId}/games
 GET  /api/rooms/{roomId}/games/current
 POST /api/games/{gameId}/ready
+POST /api/games/{gameId}/unready
+POST /api/games/{gameId}/leave
 POST /api/games/{gameId}/start
 ```
+
+Выход из комнаты `POST /api/rooms/{roomId}/leave` также убирает пользователя из лобби-игры или **отменяет** игру в статусе `IN_PROGRESS` (событие `GAME_CANCELLED`).
 
 **Создание игры:**
 
@@ -734,6 +738,9 @@ destination:/app/game/{gameId}/action
 ### 9.3. Серверные события, которые нужно обрабатывать на Android
 
 - `GAME_STARTED`
+- `PLAYER_UNREADY` — `{ userId }`
+- `PLAYER_LEFT` — `{ userId }` (лобби или после выхода из комнаты)
+- `GAME_CANCELLED` — `{ reason: "PLAYER_LEFT_ROOM" }` (игра шла, кто-то вышел из комнаты)
 - `PROMPT_RECEIVED`
 - `WAITING_FOR_OTHERS`
 - `WAITING_FOR_VOTES`
@@ -763,6 +770,16 @@ destination:/app/game/{gameId}/action
   "type": "PLAYER_READY",
   "payload": {}
 }
+```
+
+**Снять готовность / выйти из лобби (эквивалент REST `unready` / `leave`):**
+
+```json
+{ "type": "PLAYER_UNREADY", "payload": {} }
+```
+
+```json
+{ "type": "PLAYER_LEAVE_LOBBY", "payload": {} }
 ```
 
 **Отправить ответ:**
@@ -837,6 +854,18 @@ interface SyncRoomApi {
 
     @POST("/api/games/{gameId}/ready")
     suspend fun setReady(
+        @Path("gameId") gameId: String,
+        @Header("Authorization") token: String
+    )
+
+    @POST("/api/games/{gameId}/unready")
+    suspend fun setUnready(
+        @Path("gameId") gameId: String,
+        @Header("Authorization") token: String
+    )
+
+    @POST("/api/games/{gameId}/leave")
+    suspend fun leaveGameLobby(
         @Path("gameId") gameId: String,
         @Header("Authorization") token: String
     )

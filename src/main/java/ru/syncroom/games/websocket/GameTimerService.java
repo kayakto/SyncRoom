@@ -2,6 +2,7 @@ package ru.syncroom.games.websocket;
 
 import org.springframework.stereotype.Component;
 
+import java.util.HashSet;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.*;
@@ -36,6 +37,16 @@ public class GameTimerService {
 
     public static String voteKey(UUID gameId, int round) {
         return "game:" + gameId + ":round:" + round + ":vote";
+    }
+
+    /** Отменяет все отложенные задачи игры (раунды, Gartic, переходы). */
+    public void cancelAllForGame(UUID gameId) {
+        String prefix = "game:" + gameId + ":";
+        for (String key : new HashSet<>(timers.keySet())) {
+            if (key.startsWith(prefix)) {
+                cancel(key);
+            }
+        }
     }
 }
 

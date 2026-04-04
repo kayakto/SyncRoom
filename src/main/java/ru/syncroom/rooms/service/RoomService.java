@@ -16,6 +16,7 @@ import ru.syncroom.rooms.dto.SeatDto;
 import ru.syncroom.rooms.repository.RoomParticipantRepository;
 import ru.syncroom.rooms.repository.RoomRepository;
 import ru.syncroom.rooms.repository.SeatRepository;
+import ru.syncroom.games.service.GameService;
 import ru.syncroom.rooms.ws.RoomEvent;
 import ru.syncroom.rooms.ws.RoomEventType;
 import ru.syncroom.users.domain.User;
@@ -34,6 +35,7 @@ public class RoomService {
     private final UserRepository userRepository;
     private final SeatRepository seatRepository;
     private final SeatService seatService;
+    private final GameService gameService;
     private final SimpMessagingTemplate messagingTemplate;
 
     // ─── Helpers ────────────────────────────────────────────────────────────
@@ -168,6 +170,8 @@ public class RoomService {
 
         // Auto-release seat before removing from room (sends SEAT_LEFT WS event)
         seatService.releaseUserSeat(roomId, userId);
+
+        gameService.onParticipantLeftRoom(roomId, userId);
 
         participantRepository.deleteByRoomIdAndUserId(roomId, userId);
 

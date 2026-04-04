@@ -170,6 +170,8 @@
     <button class="green" onclick="gameCreate()">🎮 POST /games (create)</button>
     <button onclick="gameCurrent()">📋 GET /games/current</button>
     <button onclick="gameReady()">✅ POST /games/{id}/ready</button>
+    <button onclick="gameUnready()">↩️ POST /games/{id}/unready</button>
+    <button onclick="gameLeave()">🚪 POST /games/{id}/leave</button>
     <button onclick="gameStart()">🚀 POST /games/{id}/start</button>
     <button onclick="subGame()">👂 Subscribe /topic/game/{id}</button>
   </div>
@@ -177,6 +179,8 @@
     <button onclick="wsSubmitAnswer()">✍️ WS SUBMIT_ANSWER</button>
     <button onclick="wsSubmitVote()">🗳️ WS SUBMIT_VOTE</button>
     <button onclick="wsPlayerReady()">🙋 WS PLAYER_READY</button>
+    <button onclick="wsPlayerUnready()">🙋 WS PLAYER_UNREADY</button>
+    <button onclick="wsPlayerLeaveLobby()">🚪 WS PLAYER_LEAVE_LOBBY</button>
     <button onclick="wsSubmitPhrase()">📝 WS SUBMIT_PHRASE</button>
     <button onclick="wsSubmitDrawing()">🎨 WS SUBMIT_DRAWING</button>
     <button onclick="wsSubmitGuess()">🔎 WS SUBMIT_GUESS</button>
@@ -575,6 +579,18 @@
       api('POST', `/api/games/${g}/ready`);
     }
 
+    function gameUnready() {
+      const g = gid();
+      if (!g) { log('⚠️ Нужен Game ID', 'err'); return; }
+      api('POST', `/api/games/${g}/unready`);
+    }
+
+    function gameLeave() {
+      const g = gid();
+      if (!g) { log('⚠️ Нужен Game ID', 'err'); return; }
+      api('POST', `/api/games/${g}/leave`);
+    }
+
     function gameStart() {
       const g = gid();
       if (!g) { log('⚠️ Нужен Game ID', 'err'); return; }
@@ -586,6 +602,26 @@
       const g = gid();
       if (!g) { log('⚠️ Нужен Game ID', 'err'); return; }
       const payload = { type: 'PLAYER_READY', payload: {} };
+      const dest = `/app/game/${g}/action`;
+      log(`WS SEND ${dest}: ` + JSON.stringify(payload), 'out');
+      stompClient.send(dest, {}, JSON.stringify(payload));
+    }
+
+    function wsPlayerUnready() {
+      if (!chk()) return;
+      const g = gid();
+      if (!g) { log('⚠️ Нужен Game ID', 'err'); return; }
+      const payload = { type: 'PLAYER_UNREADY', payload: {} };
+      const dest = `/app/game/${g}/action`;
+      log(`WS SEND ${dest}: ` + JSON.stringify(payload), 'out');
+      stompClient.send(dest, {}, JSON.stringify(payload));
+    }
+
+    function wsPlayerLeaveLobby() {
+      if (!chk()) return;
+      const g = gid();
+      if (!g) { log('⚠️ Нужен Game ID', 'err'); return; }
+      const payload = { type: 'PLAYER_LEAVE_LOBBY', payload: {} };
       const dest = `/app/game/${g}/action`;
       log(`WS SEND ${dest}: ` + JSON.stringify(payload), 'out');
       stompClient.send(dest, {}, JSON.stringify(payload));

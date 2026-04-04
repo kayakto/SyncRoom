@@ -1,10 +1,17 @@
 package ru.syncroom.common.config;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.messaging.converter.MappingJackson2MessageConverter;
+import org.springframework.messaging.converter.MessageConverter;
 import org.springframework.messaging.simp.config.MessageBrokerRegistry;
+import org.springframework.util.MimeTypeUtils;
 import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBroker;
 import org.springframework.web.socket.config.annotation.StompEndpointRegistry;
 import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerConfigurer;
+
+import java.util.List;
 
 /**
  * STOMP WebSocket configuration.
@@ -24,7 +31,23 @@ import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerCo
  */
 @Configuration
 @EnableWebSocketMessageBroker
+@RequiredArgsConstructor
 public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
+
+    private final ObjectMapper objectMapper;
+
+    /**
+     * Используем тот же ObjectMapper, что и REST (JavaTimeModule и т.д.), иначе
+     * {@code convertAndSend(ChatMessageResponse)} может не сериализовать {@code OffsetDateTime} в JSON для STOMP.
+     */
+    @Override
+    public boolean configureMessageConverters(List<MessageConverter> messageConverters) {
+        MappingJackson2MessageConverter json = new MappingJackson2MessageConverter();
+        json.setObjectMapper(objectMapper);
+        json.setContentTypeResolver(m -> MimeTypeUtils.APPLICATION_JSON);
+        messageConverters.add(0, json);
+        return false;
+    }
 
     @Override
     public void configureMessageBroker(MessageBrokerRegistry registry) {

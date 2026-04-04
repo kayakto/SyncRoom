@@ -239,7 +239,11 @@ POST /api/rooms/{roomId}/tasks
 | POST | `/api/rooms/{roomId}/games` | Создать игровую сессию (лобби) |
 | GET | `/api/rooms/{roomId}/games/current` | Получить активную игру в комнате |
 | POST | `/api/games/{gameId}/ready` | Отметиться готовым (upsert игрока) |
+| POST | `/api/games/{gameId}/unready` | Снять готовность (только `LOBBY`) |
+| POST | `/api/games/{gameId}/leave` | Выйти из лобби игры (только `LOBBY`); если игроков не осталось — сессия удаляется |
 | POST | `/api/games/{gameId}/start` | Старт игры (минимум 3 ready игрока) |
+
+При **`POST /api/rooms/{roomId}/leave`** сервер также убирает пользователя из активной игры этой комнаты: в **LOBBY** — как `leave`, при **IN_PROGRESS** — игра **отменяется** (`GAME_CANCELLED`), таймеры сбрасываются, сессия удаляется.
 
 **Create game request:**
 
@@ -349,6 +353,9 @@ destination:/app/room/{roomId}/projector/control
 | `STREAM_LIVE` | `.../room/{id}/projector` | SRS `on_publish` | `{ videoUrl }` |
 | `STREAM_OFFLINE` | `.../room/{id}/projector` | SRS `on_unpublish` | `{}` |
 | `GAME_STARTED` | `.../game/{id}` | `POST /games/{id}/start` | `{ players[] }` |
+| `PLAYER_UNREADY` | `.../game/{id}` | `POST /games/{id}/unready` или WS | `{ userId }` |
+| `PLAYER_LEFT` | `.../game/{id}` | `POST /games/{id}/leave` или выход из комнаты (лобби) | `{ userId }` |
+| `GAME_CANCELLED` | `.../game/{id}` | выход из комнаты при игре `IN_PROGRESS` | `{ reason: "PLAYER_LEFT_ROOM" }` |
 | `PROMPT_RECEIVED` | `.../game/{id}` | старт / следующий раунд | `{ promptId, text, timeLimit }` |
 | `WAITING_FOR_OTHERS` | `.../game/{id}` | игрок отправил ответ раньше других | `{}` |
 | `WAITING_FOR_VOTES` | `.../game/{id}` | собраны ответы | `{ promptId, answers[], timeLimit }` |
@@ -443,11 +450,11 @@ gradle test
 | `ProjectorControllerTest` | REST + SRS callback для проектора | 7 |
 | `PomodoroControllerTest` | REST для помодоро | 6 |
 | `StudyTaskControllerTest` | REST для учебных тасков | 4 |
-| `GameControllerTest` | REST сценарии игр (create/current/ready/start, включая Gartic) | 3 |
+| `GameControllerTest` | REST игры: create/current/ready/unready/leave/start, leaveRoom→игра | 6 |
 | `GameServiceWebSocketTest` | Quiplash + Gartic WS flow, валидации и таймауты | 4 |
 | `RoomChatControllerTest` | История чата: пагинация, пустой список, два автора, доступ | 7 |
 | `RoomChatServiceTest` | Валидация, trim, пагинация, broadcast, граница 4000 символов | 9 |
-| **Итого** | | **141** |
+| **Итого** | | **144** |
 
 Тесты используют H2 in-memory БД, `@MockitoBean SimpMessagingTemplate` (Spring Boot 3.4+), Redis не требуется.
 

@@ -42,6 +42,24 @@ public class GameController {
         gameService.markReady(gameId, currentUser.getId());
     }
 
+    @PostMapping("/api/games/{gameId}/unready")
+    @ResponseStatus(HttpStatus.OK)
+    public void unready(
+            @PathVariable UUID gameId,
+            @AuthenticationPrincipal User currentUser
+    ) {
+        gameService.markUnready(gameId, currentUser.getId());
+    }
+
+    @PostMapping("/api/games/{gameId}/leave")
+    @ResponseStatus(HttpStatus.OK)
+    public void leaveLobby(
+            @PathVariable UUID gameId,
+            @AuthenticationPrincipal User currentUser
+    ) {
+        gameService.leaveLobby(gameId, currentUser.getId());
+    }
+
     @PostMapping("/api/games/{gameId}/start")
     @ResponseStatus(HttpStatus.OK)
     public void start(@PathVariable UUID gameId) {

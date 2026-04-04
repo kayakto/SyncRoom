@@ -96,6 +96,79 @@ public class GameService {
     }
 
     @Transactional
+    public void markUnready(UUID gameId, UUID userId) {
+        GameSession game = gameSessionRepository.findById(gameId).orElseThrow(() -> new NotFoundException("Game not found"));
+        if (!"LOBBY".equals(game.getStatus())) {
+            throw new BadRequestException("Cannot change ready state: game is not in LOBBY");
+        }
+        GamePlayer player = gamePlayerRepository.findByGameIdAndUserId(gameId, userId)
+                .orElseThrow(() -> new NotFoundException("Player not found"));
+        player.setIsReady(false);
+        gamePlayerRepository.save(player);
+        eventSender.sendToGame(gameId, "PLAYER_UNREADY", Map.of("userId", userId.toString()));
+    }
+
+    /**
+     * Выход из лобби игры (только LOBBY). Удаляет игрока; если игроков не осталось — сессия удаляется.
+     */
+    @Transactional
+    public void leaveLobby(UUID gameId, UUID userId) {
+        GameSession game = gameSessionRepository.findById(gameId).orElseThrow(() -> new NotFoundException("Game not found"));
+        if (!"LOBBY".equals(game.getStatus())) {
+            throw new BadRequestException("Cannot leave lobby: game already started or finished");
+        }
+        removePlayerFromLobby(game, userId);
+    }
+
+    /**
+     * Вызывается при выходе пользователя из комнаты: убрать из лобби или прервать игру в процессе.
+     */
+    @Transactional
+    public void onParticipantLeftRoom(UUID roomId, UUID userId) {
+        gameSessionRepository.findFirstByRoomIdAndStatusNotOrderByCreatedAtDesc(roomId, "FINISHED")
+                .ifPresent(game -> {
+                    if ("LOBBY".equals(game.getStatus())) {
+                        removePlayerFromLobbyIfPresent(game.getId(), userId);
+                    } else if ("IN_PROGRESS".equals(game.getStatus())
+                            && gamePlayerRepository.existsByGameIdAndUserId(game.getId(), userId)) {
+                        abortGameInProgress(game.getId());
+                    }
+                });
+    }
+
+    private void removePlayerFromLobby(GameSession game, UUID userId) {
+        GamePlayer player = gamePlayerRepository.findByGameIdAndUserId(game.getId(), userId)
+                .orElseThrow(() -> new NotFoundException("Player not found"));
+        gamePlayerRepository.delete(player);
+        eventSender.sendToGame(game.getId(), "PLAYER_LEFT", Map.of("userId", userId.toString()));
+        finalizeLobbyIfEmpty(game.getId());
+    }
+
+    private void removePlayerFromLobbyIfPresent(UUID gameId, UUID userId) {
+        gamePlayerRepository.findByGameIdAndUserId(gameId, userId).ifPresent(player -> {
+            gamePlayerRepository.delete(player);
+            eventSender.sendToGame(gameId, "PLAYER_LEFT", Map.of("userId", userId.toString()));
+            finalizeLobbyIfEmpty(gameId);
+        });
+    }
+
+    private void finalizeLobbyIfEmpty(UUID gameId) {
+        if (gamePlayerRepository.countByGameId(gameId) == 0) {
+            gameSessionRepository.findById(gameId).ifPresent(gameSessionRepository::delete);
+        }
+    }
+
+    private void abortGameInProgress(UUID gameId) {
+        gameTimerService.cancelAllForGame(gameId);
+        GameSession game = gameSessionRepository.findById(gameId).orElse(null);
+        if (game == null) {
+            return;
+        }
+        eventSender.sendToGame(gameId, "GAME_CANCELLED", Map.of("reason", "PLAYER_LEFT_ROOM"));
+        gameSessionRepository.delete(game);
+    }
+
+    @Transactional
     public void startGame(UUID gameId) {
         GameSession game = gameSessionRepository.findById(gameId).orElseThrow(() -> new NotFoundException("Game not found"));
         List<GamePlayer> players = gamePlayerRepository.findByGameId(gameId);
@@ -127,6 +200,14 @@ public class GameService {
         String type = msg.getType();
         if ("PLAYER_READY".equals(type)) {
             markReady(gameId, userId);
+            return;
+        }
+        if ("PLAYER_UNREADY".equals(type)) {
+            markUnready(gameId, userId);
+            return;
+        }
+        if ("PLAYER_LEAVE_LOBBY".equals(type)) {
+            leaveLobby(gameId, userId);
             return;
         }
         if ("SUBMIT_ANSWER".equals(type)) {
