@@ -287,6 +287,20 @@ CONNECT
 Authorization:Bearer <accessToken>
 ```
 
+### Обрыв WebSocket (закрытие STOMP-сессии)
+
+Если клиент **закрывает последнее** STOMP-подключение, в котором при CONNECT был передан валидный JWT (`Authorization: Bearer …`), сервер выполняет **тот же выход из комнаты**, что и при `POST /api/rooms/{roomId}/leave`:
+
+- освобождается место (при необходимости уходит `SEAT_LEFT` на `/topic/room/{roomId}/seats`);
+- участник удаляется из комнаты, подписчикам `/topic/room/{roomId}` уходит `PARTICIPANT_LEFT`;
+- **игра:** как при HTTP leave — выход из лобби / отмена `IN_PROGRESS` для игрока (см. `GAME_CANCELLED` в таблице ниже).
+
+**Нюансы:**
+
+- Без JWT в CONNECT (`StompPrincipal` не установлен) при отключении комната **не** меняется.
+- Если у пользователя **несколько** одновременных STOMP-сессий (две вкладки и т.п.), закрытие одной сессии **не** удаляет из комнаты — пока жива хотя бы одна сессия с тем же пользователем.
+- Клиент **без** WebSocket (только REST) при обрыве сети в БД остаётся участником, пока не вызовет `POST .../leave` или не подключит STOMP и снова не отключится.
+
 ### Топики
 
 | Топик | События |
@@ -344,9 +358,9 @@ destination:/app/room/{roomId}/projector/control
 | Тип | Топик | Триггер | Payload |
 |-----|-------|---------|---------|
 | `PARTICIPANT_JOINED` | `.../room/{id}` | `POST /join` | `{ userId, name, avatarUrl, joinedAt }` |
-| `PARTICIPANT_LEFT` | `.../room/{id}` | `POST /leave` | `{ userId, name, avatarUrl }` |
+| `PARTICIPANT_LEFT` | `.../room/{id}` | `POST /leave` или закрытие **последнего** STOMP (с JWT) | `{ userId, name, avatarUrl }` |
 | `SEAT_TAKEN` | `.../room/{id}/seats` | `POST /sit` | `{ seatId, user: { id, name, avatarUrl } }` |
-| `SEAT_LEFT` | `.../room/{id}/seats` | `POST /leave seat` или выход | `{ seatId, userId }` |
+| `SEAT_LEFT` | `.../room/{id}/seats` | `POST /leave seat`, выход из комнаты или закрытие **последнего** STOMP (с JWT) | `{ seatId, userId }` |
 | `PROJECTOR_STARTED` | `.../room/{id}/projector` | `POST /projector` | `{ host, mode, videoUrl, videoTitle, streamKey? }` |
 | `PROJECTOR_STOPPED` | `.../room/{id}/projector` | `DELETE /projector` или выход хоста | `{ hostId }` |
 | `PROJECTOR_CONTROL` | `.../room/{id}/projector` | WS SEND `/projector/control` | `{ action, positionMs }` |
@@ -441,20 +455,21 @@ gradle test
 
 | Файл | Что тестирует | Тестов |
 |------|--------------|--------|
-| `AuthControllerTest` | register, email login, OAuth, refresh | 13 |
+| `AuthControllerTest` | register, email login, OAuth, refresh | 16 |
 | `UserControllerTest` | GET/PUT /me | 9 |
 | `PointControllerTest` | CRUD точек | 24 |
 | `RoomControllerTest` | GET rooms/my, join, leave | 31 |
-| `RoomServiceWebSocketTest` | WS-события PARTICIPANT_JOINED/LEFT | 14 |
+| `RoomServiceWebSocketTest` | WS-события PARTICIPANT_JOINED/LEFT, leave при обрыве WS | 16 |
+| `WebSocketRoomDisconnectListenerTest` | STOMP disconnect → leave комнаты, мультисессии | 3 |
 | `SeatControllerTest` | sit, stand-up, auto-move, 403, 409, 404 | 9 |
-| `ProjectorControllerTest` | REST + SRS callback для проектора | 7 |
+| `ProjectorControllerTest` | REST + SRS callback для проектора | 8 |
 | `PomodoroControllerTest` | REST для помодоро | 6 |
 | `StudyTaskControllerTest` | REST для учебных тасков | 4 |
 | `GameControllerTest` | REST игры: create/current/ready/unready/leave/start, leaveRoom→игра | 6 |
-| `GameServiceWebSocketTest` | Quiplash + Gartic WS flow, валидации и таймауты | 4 |
+| `GameServiceWebSocketTest` | Quiplash + Gartic WS flow, валидации и таймауты | 5 |
 | `RoomChatControllerTest` | История чата: пагинация, пустой список, два автора, доступ | 7 |
 | `RoomChatServiceTest` | Валидация, trim, пагинация, broadcast, граница 4000 символов | 9 |
-| **Итого** | | **144** |
+| **Итого** | | **153** |
 
 Тесты используют H2 in-memory БД, `@MockitoBean SimpMessagingTemplate` (Spring Boot 3.4+), Redis не требуется.
 

@@ -191,6 +191,20 @@ public class RoomService {
     }
 
     /**
+     * Выход из комнаты при обрыве WebSocket (последняя STOMP-сессия пользователя).
+     * Идемпотентно: если пользователь ни в одной комнате — ничего не делает.
+     */
+    @Transactional
+    public void leaveRoomOnWebSocketDisconnect(UUID userId) {
+        List<RoomParticipant> existing = participantRepository.findByUserId(userId);
+        if (existing.isEmpty()) {
+            return;
+        }
+        UUID roomId = existing.getFirst().getRoom().getId();
+        leaveRoom(roomId, userId);
+    }
+
+    /**
      * Returns all rooms that the user is currently a member of (including seat state).
      */
     @Transactional(readOnly = true)

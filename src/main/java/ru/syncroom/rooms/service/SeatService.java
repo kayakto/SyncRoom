@@ -29,7 +29,7 @@ import java.util.UUID;
  * Rules:
  *   1. One user = one seat per room.
  *   2. Sitting on a new seat while already seated → auto-move (SEAT_LEFT old + SEAT_TAKEN new).
- *   3. On room leave or WS disconnect → auto-release seat (SEAT_LEFT).
+ *   3. On room leave (HTTP или при закрытии последнего WebSocket) → auto-release seat (SEAT_LEFT).
  *
  * WS topic: /topic/room/{roomId}/seats
  */
@@ -166,7 +166,7 @@ public class SeatService {
 
     /**
      * Release all seats a user occupies in a given room.
-     * Called automatically on leaveRoom and WebSocket disconnect.
+     * Called automatically on leaveRoom (including leave triggered by WebSocket disconnect).
      * Does nothing (silently) if user has no seat.
      */
     @Transactional

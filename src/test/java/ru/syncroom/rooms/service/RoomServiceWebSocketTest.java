@@ -276,4 +276,28 @@ class RoomServiceWebSocketTest {
 
         verifyNoInteractions(messagingTemplate);
     }
+
+    @Test
+    @DisplayName("leaveRoomOnWebSocketDisconnect удаляет участие и шлёт PARTICIPANT_LEFT")
+    void leaveRoomOnWebSocketDisconnect_sameAsLeaveRoom() {
+        participantRepository.save(RoomParticipant.builder()
+                .room(testRoom)
+                .user(testUser)
+                .build());
+
+        roomService.leaveRoomOnWebSocketDisconnect(testUser.getId());
+
+        assertFalse(participantRepository.existsByRoomIdAndUserId(testRoom.getId(), testUser.getId()));
+        verify(messagingTemplate, times(1)).convertAndSend(
+                eq("/topic/room/" + testRoom.getId()),
+                argThat((RoomEvent event) -> event.getType() == RoomEventType.PARTICIPANT_LEFT)
+        );
+    }
+
+    @Test
+    @DisplayName("leaveRoomOnWebSocketDisconnect идемпотентен если пользователь не в комнате")
+    void leaveRoomOnWebSocketDisconnect_noOpWhenNotInRoom() {
+        roomService.leaveRoomOnWebSocketDisconnect(testUser.getId());
+        verifyNoInteractions(messagingTemplate);
+    }
 }

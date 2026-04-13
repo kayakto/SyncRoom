@@ -28,6 +28,7 @@
   - `GET /api/rooms`, `GET /api/rooms/my`
   - `POST /api/rooms/{id}/join`, `POST /api/rooms/{id}/leave`
   - Ограничение: один пользователь может быть только в одной комнате одновременно.
+  - При **закрытии последнего** STOMP-подключения с JWT в CONNECT сервер сам выполняет тот же выход, что и `POST .../leave` (место, участник, лобби/игра — см. раздел WebSocket ниже).
 
 - **Seats** — места в комнате:
   - `POST /api/rooms/{roomId}/seats/{seatId}/sit`
@@ -694,7 +695,7 @@ POST /api/games/{gameId}/leave
 POST /api/games/{gameId}/start
 ```
 
-Выход из комнаты `POST /api/rooms/{roomId}/leave` также убирает пользователя из лобби-игры или **отменяет** игру в статусе `IN_PROGRESS` (событие `GAME_CANCELLED`).
+Выход из комнаты `POST /api/rooms/{roomId}/leave` также убирает пользователя из лобби-игры или **отменяет** игру в статусе `IN_PROGRESS` (событие `GAME_CANCELLED`). То же относится к **закрытию последней** STOMP-сессии с JWT (обрыв сети, см. раздел WebSocket).
 
 **Создание игры:**
 
@@ -1063,7 +1064,7 @@ suspend fun getRoomMessages(
 | **1 — Auth** | JWT авторизация: email, VK, Yandex |
 | **2 — Points** | CRUD точек на карте |
 | **3 — Rooms** | Список комнат, join, leave, my rooms; правило «1 пользователь = 1 комната» |
-| **4 — WebSocket** | STOMP-подключение, события `PARTICIPANT_JOINED` / `PARTICIPANT_LEFT`, обновлённый ответ `POST /join` |
+| **4 — WebSocket** | STOMP-подключение, события `PARTICIPANT_JOINED` / `PARTICIPANT_LEFT`, автовыход при обрыве последней сессии (JWT), обновлённый ответ `POST /join` |
 
 ---
 
@@ -1161,6 +1162,19 @@ Authorization:Bearer <accessToken>
 accept-version:1.2
 ```
 
+### Обрыв соединения (краш, потеря сети, закрытие сокета)
+
+Рекомендуется держать **одно** STOMP-подключение на пользователя в комнате (или учитывать мультисессии ниже).
+
+Когда закрывается **последняя** активная STOMP-сессия этого пользователя **и** в CONNECT был валидный `Authorization: Bearer <accessToken>`:
+
+- бэкенд делает то же, что `POST /api/rooms/{roomId}/leave`: снимает с места, удаляет участие, шлёт `PARTICIPANT_LEFT` (и при необходимости `SEAT_LEFT`);
+- **игра:** как при HTTP leave — выход из лобби / отмена матча для игрока (`GAME_CANCELLED` при `IN_PROGRESS`).
+
+Если JWT в CONNECT не передавали — при отключении комната **не** очищается. Если открыты **две** вкладки с двумя сессиями — закрытие одной **не** выводит из комнаты.
+
+Без WebSocket (только REST) при обрыве сети пользователь остаётся в комнате до явного `POST .../leave` после восстановления связи.
+
 ### Подписка на события комнаты
 
 ```
@@ -1188,7 +1202,7 @@ id:sub-0
 | Тип | Когда |
 |-----|-------|
 | `PARTICIPANT_JOINED` | Кто-то вызвал `POST /join` |
-| `PARTICIPANT_LEFT` | Кто-то вызвал `POST /leave` |
+| `PARTICIPANT_LEFT` | `POST /leave` или закрытие **последней** STOMP-сессии пользователя (с JWT в CONNECT) |
 
 ### Когда приходят события
 
@@ -1202,6 +1216,10 @@ Android A             Backend               Android B
    │─ POST /leave ───────►│                     │
    │◄─ 204 No Content ───│                     │
    │                     │── PARTICIPANT_LEFT ───► (все подписчики /topic/room/{id})
+   │                     │                     │
+   │─ TCP/STOMP close ───►│  (последняя сессия, был JWT в CONNECT)
+   │                     │── SEAT_LEFT? ────────► (если сидел на месте)
+   │                     │── PARTICIPANT_LEFT ───► (как при POST /leave)
 ```
 
 ### Kotlin (Android) — пример подключения
@@ -1322,7 +1340,7 @@ stomp-test.html
 | **1 — Auth** | JWT авторизация: email, VK, Yandex |
 | **2 — Points** | CRUD точек на карте |
 | **3 — Rooms** | Список комнат, join, leave, my rooms; правило «1 пользователь = 1 комната» |
-| **4 — WebSocket** | STOMP-подключение, события `PARTICIPANT_JOINED` / `PARTICIPANT_LEFT`, обновлённый ответ `POST /join` |
+| **4 — WebSocket** | STOMP-подключение, события `PARTICIPANT_JOINED` / `PARTICIPANT_LEFT`, автовыход при обрыве последней сессии (JWT), обновлённый ответ `POST /join` |
 | **5 — Seats** ✨ | Механика мест в комнате: занять (`/sit`), встать (`/leave`), автопересадка, WS-события `SEAT_TAKEN` / `SEAT_LEFT`, `backgroundPicture` у комнат |
 
 ---
@@ -1412,6 +1430,8 @@ POST /api/rooms/{id}/join → войти в комнату
 POST /api/rooms/{id}/leave → выйти из комнаты → 204 (+ автоматически освобождает место)
 ```
 
+Тот же эффект, что `POST .../leave`, даёт **закрытие последней** STOMP-сессии пользователя при наличии JWT в CONNECT (подробнее — в разделе WebSocket ниже).
+
 ### POST /join — ответ
 
 ```json
@@ -1457,6 +1477,7 @@ POST /api/rooms/{roomId}/seats/{seatId}/leave  → встать с места
 | Пользователь вызывает `/leave` со своего места | Освобождает место, SEAT_LEFT |
 | Пользователь вызывает `/leave` с чужого места | `403 Forbidden` |
 | Пользователь покидает комнату (`POST /leave`) | Место освобождается **автоматически** |
+| Закрыта **последняя** STOMP-сессия с JWT (как при обрыве сети) | Как строка выше: сервер выполняет тот же выход из комнаты |
 
 ### POST /sit — ответ
 
@@ -1510,6 +1531,8 @@ Authorization:Bearer <accessToken>
 accept-version:1.2
 ```
 
+**Обрыв соединения:** при закрытии **последней** STOMP-сессии с JWT в CONNECT сервер выполняет тот же сценарий, что `POST /api/rooms/{roomId}/leave` (место, `PARTICIPANT_LEFT`, логика игры). Полное описание — в разделе **«WebSocket (STOMP) — Шаг 4»**. Если открыто несколько сессий (вкладки), закрытие одной не выводит из комнаты.
+
 ### Топики
 
 | Топик | Назначение |
@@ -1532,9 +1555,9 @@ accept-version:1.2
 | Тип | Топик | Когда | Payload |
 |-----|-------|-------|---------|
 | `PARTICIPANT_JOINED` | `/topic/room/{id}` | `POST /join` | `{ userId, name, avatarUrl, joinedAt }` |
-| `PARTICIPANT_LEFT` | `/topic/room/{id}` | `POST /leave` | `{ userId, name, avatarUrl }` |
+| `PARTICIPANT_LEFT` | `/topic/room/{id}` | `POST /leave` или закрытие **последнего** STOMP (с JWT) | `{ userId, name, avatarUrl }` |
 | `SEAT_TAKEN` | `/topic/room/{id}/seats` | `POST /sit` | `{ seatId, user: { id, name, avatarUrl } }` |
-| `SEAT_LEFT` | `/topic/room/{id}/seats` | `POST /leave seat` или выход из комнаты | `{ seatId, userId }` |
+| `SEAT_LEFT` | `/topic/room/{id}/seats` | `POST /leave seat`, выход из комнаты или закрытие **последнего** STOMP (с JWT) | `{ seatId, userId }` |
 
 ### Сценарий: автопересадка
 
@@ -1563,6 +1586,10 @@ Android A             Backend               Android B
    │◄─ 204 ───────────────│                     │
    │                     │── SEAT_LEFT ──────────► (автоматически, если сидел)
    │                     │── PARTICIPANT_LEFT ───► (в /topic/room/{id})
+   │                     │                     │
+   │─ TCP/STOMP close ───►│  (последняя сессия, JWT в CONNECT)
+   │                     │── SEAT_LEFT ──────────► (если сидел)
+   │                     │── PARTICIPANT_LEFT ───► (как POST /leave room)
 ```
 
 ### Kotlin (Android) — пример подключения
