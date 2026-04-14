@@ -432,6 +432,7 @@ DELETE /api/rooms/{roomId}/pomodoro
 
 - Доступно только для комнат с `context = "study"`.
 - Любой участник комнаты может запускать/останавливать таймер.
+- **Автосмена фазы на сервере:** раз в ~1 с бекенд ищет активные сессии (`WORK` / `BREAK` / `LONG_BREAK`), у которых `phaseEndAt` уже наступил, и переводит на следующую фазу — в WebSocket уходит тот же `POMODORO_PHASE_CHANGED`, что и при ручном `skip`, либо `POMODORO_STOPPED` при завершении цикла. Клиенту **не обязательно** вызывать `skip` по локальному таймеру: достаточно подписаться на топик и обновлять UI по событиям; `skip` остаётся для ручного «пропустить фазу». После рестарта сервера таймер в памяти сбрасывается, но фаза догонится за счёт этого механизма (пока сессия есть в БД).
 
 **Старт помодоро:**
 
@@ -479,7 +480,7 @@ id:sub-pomodoro
 События (формат как у остальных WS-событий):
 
 - `POMODORO_STARTED` — отправляется после `start`;
-- `POMODORO_PHASE_CHANGED` — автоматический или ручной переход фазы (WORK/BREAK/LONG_BREAK);
+- `POMODORO_PHASE_CHANGED` — переход фазы (WORK/BREAK/LONG_BREAK): после **истечения** `phaseEndAt` на сервере, по **ручному** `skip` или по внутреннему таймеру процесса;
 - `POMODORO_PAUSED` — `{ "phase": "PAUSED", "remainingSeconds": N }`;
 - `POMODORO_RESUMED` — `{ "phase": "...", "phaseEndAt": "..." }`;
 - `POMODORO_STOPPED` — таймер остановлен или цикл завершён.
@@ -581,13 +582,31 @@ interface SyncRoomApi {
 
 ```text
 GET    /api/rooms/{roomId}/tasks
+GET    /api/rooms/{roomId}/tasks/all
+GET    /api/rooms/{roomId}/leaderboard
 POST   /api/rooms/{roomId}/tasks
+POST   /api/rooms/{roomId}/tasks/{taskId}/like
+DELETE /api/rooms/{roomId}/tasks/{taskId}/like
 PUT    /api/rooms/{roomId}/tasks/{taskId}
 DELETE /api/rooms/{roomId}/tasks/{taskId}
 ```
 
 - Возвращаются только таски **текущего пользователя** в комнате.
 - `sortOrder` определяет порядок показа.
+
+**Лайки и лидерборд** (участники комнаты):
+
+```text
+GET    /api/rooms/{roomId}/tasks/all
+GET    /api/rooms/{roomId}/leaderboard
+POST   /api/rooms/{roomId}/tasks/{taskId}/like
+DELETE /api/rooms/{roomId}/tasks/{taskId}/like
+```
+
+- `GET .../tasks/all` — все цели **всех** участников с полями: `id`, `text`, `isDone`, `sortOrder`, `ownerId`, `ownerName`, `likeCount`, `likedByMe`.
+- `GET .../leaderboard` — массив по **всем** участникам комнаты, сортировка по убыванию `totalLikes`, затем по имени: `userId`, `userName`, `avatarUrl`, `totalLikes`, `completedTasks`, `totalTasks` (`totalLikes` — сколько лайков набрали **цели этого пользователя** в комнате).
+- Лайкать можно только **чужие** цели; свой таск — `400`. Повторный `POST` like идемпотентен (второй раз без нового WS `TASK_LIKED`). `DELETE` like без лайка — `200`, `likedByMe: false`, без события `TASK_UNLIKED`.
+- Подписка на обновления лайков: **`/topic/room/{roomId}/tasks`** (см. ниже).
 
 **Примеры:**
 
@@ -609,7 +628,80 @@ PUT /api/rooms/{roomId}/tasks/{taskId}
 { "text": "Прочитать главу 5 и 6", "isDone": true, "sortOrder": 0 }
 ```
 
-### 7.2. Kotlin-модели тасков
+**Ответ лайка (POST/DELETE):**
+
+```json
+{ "taskId": "uuid", "likeCount": 3, "likedByMe": true }
+```
+
+**Элемент `GET .../tasks/all`:**
+
+```json
+{
+  "id": "uuid",
+  "text": "Выучить Kotlin coroutines",
+  "isDone": false,
+  "sortOrder": 1,
+  "ownerId": "uuid",
+  "ownerName": "Иван",
+  "likeCount": 3,
+  "likedByMe": true
+}
+```
+
+**Элемент `GET .../leaderboard`:**
+
+```json
+{
+  "userId": "uuid",
+  "userName": "Иван",
+  "avatarUrl": "https://...",
+  "totalLikes": 12,
+  "completedTasks": 3,
+  "totalTasks": 5
+}
+```
+
+### 7.2. WebSocket: лайки на таски
+
+Подписка:
+
+```text
+SUBSCRIBE
+destination:/topic/room/{roomId}/tasks
+```
+
+События (конверт как у других модулей: `type`, `payload`, `timestamp`):
+
+- `TASK_LIKED` — после первого успешного `POST .../like`:
+  ```json
+  {
+    "type": "TASK_LIKED",
+    "payload": {
+      "taskId": "uuid",
+      "userId": "uuid",
+      "userName": "Иван",
+      "likeCount": 5,
+      "action": "LIKE"
+    },
+    "timestamp": "..."
+  }
+  ```
+- `TASK_UNLIKED` — после `DELETE .../like`, если лайк был удалён:
+  ```json
+  {
+    "type": "TASK_UNLIKED",
+    "payload": {
+      "taskId": "uuid",
+      "userId": "uuid",
+      "likeCount": 4,
+      "action": "UNLIKE"
+    },
+    "timestamp": "..."
+  }
+  ```
+
+### 7.3. Kotlin-модели тасков
 
 ```kotlin
 @Serializable
@@ -629,6 +721,35 @@ data class UpdateTaskRequest(
     val isDone: Boolean? = null,
     val sortOrder: Int? = null
 )
+
+@Serializable
+data class StudyTaskWithLikesResponse(
+    val id: String,
+    val text: String,
+    @SerialName("isDone") val isDone: Boolean,
+    val sortOrder: Int,
+    val ownerId: String,
+    val ownerName: String,
+    val likeCount: Long,
+    @SerialName("likedByMe") val likedByMe: Boolean
+)
+
+@Serializable
+data class TaskLikeResult(
+    val taskId: String,
+    val likeCount: Long,
+    @SerialName("likedByMe") val likedByMe: Boolean
+)
+
+@Serializable
+data class LeaderboardEntry(
+    val userId: String,
+    val userName: String,
+    val avatarUrl: String? = null,
+    val totalLikes: Long,
+    val completedTasks: Long,
+    val totalTasks: Long
+)
 ```
 
 Расширение Retrofit:
@@ -642,6 +763,32 @@ interface SyncRoomApi {
         @Path("roomId") roomId: String,
         @Header("Authorization") token: String
     ): List<StudyTaskResponse>
+
+    @GET("/api/rooms/{roomId}/tasks/all")
+    suspend fun getAllTasksWithLikes(
+        @Path("roomId") roomId: String,
+        @Header("Authorization") token: String
+    ): List<StudyTaskWithLikesResponse>
+
+    @GET("/api/rooms/{roomId}/leaderboard")
+    suspend fun getStudyLeaderboard(
+        @Path("roomId") roomId: String,
+        @Header("Authorization") token: String
+    ): List<LeaderboardEntry>
+
+    @POST("/api/rooms/{roomId}/tasks/{taskId}/like")
+    suspend fun likeTask(
+        @Path("roomId") roomId: String,
+        @Path("taskId") taskId: String,
+        @Header("Authorization") token: String
+    ): TaskLikeResult
+
+    @DELETE("/api/rooms/{roomId}/tasks/{taskId}/like")
+    suspend fun unlikeTask(
+        @Path("roomId") roomId: String,
+        @Path("taskId") taskId: String,
+        @Header("Authorization") token: String
+    ): TaskLikeResult
 
     @POST("/api/rooms/{roomId}/tasks")
     suspend fun createTask(
@@ -674,11 +821,13 @@ interface SyncRoomApi {
 - **Помодоро:**
   - при заходе в `study`-комнату можно показать кнопку «Запустить таймер» → `startPomodoro`;
   - подписаться на `/topic/room/{roomId}/pomodoro` и обновлять UI по событиям `POMODORO_STARTED`, `POMODORO_PHASE_CHANGED`, `POMODORO_PAUSED`, `POMODORO_RESUMED`, `POMODORO_STOPPED`;
-  - локальный отсчёт таймера привязывать к `phaseEndAt`.
+  - локальный отсчёт можно вести от `phaseEndAt`, но **обязательно** подстраиваться под `POMODORO_PHASE_CHANGED` с сервера (автосмена фазы ~раз в секунду на бекенде);
+  - кнопка «Пропустить фазу» → `skipPomodoro` (необязательна для корректной смены фаз).
 - **Учебные таски:**
-  - на экране комнаты показывать список из `GET /tasks` для текущего пользователя;
-  - создание/изменение/удаление тасков делается чисто через REST, без WebSocket;
-  - `sortOrder` можно использовать для drag & drop сортировки (при перестановке пересчитывать и отправлять `UpdateTaskRequest` с новыми значениями).
+  - личный список: `GET /tasks`; общая картина с лайками: `GET /tasks/all`; лидерборд: `GET /leaderboard`;
+  - подписка на `/topic/room/{roomId}/tasks` для `TASK_LIKED` / `TASK_UNLIKED`, чтобы обновлять счётчики у всех без опроса REST;
+  - создание/изменение/удаление **своих** тасков — REST; лайки — `POST`/`DELETE .../like;
+  - `sortOrder` можно использовать для drag & drop (после перестановки — `UpdateTaskRequest`).
 
 ---
 

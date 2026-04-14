@@ -14,5 +14,13 @@ public interface StudyTaskRepository extends JpaRepository<StudyTask, UUID> {
     List<StudyTask> findByUserIdAndRoomIdOrderBySortOrderAsc(UUID userId, UUID roomId);
 
     Optional<StudyTask> findByIdAndUserIdAndRoomId(UUID id, UUID userId, UUID roomId);
+
+    Optional<StudyTask> findByIdAndRoom_Id(UUID id, UUID roomId);
+
+    List<StudyTask> findByRoom_IdOrderByUser_IdAscSortOrderAsc(UUID roomId);
+
+    long countByUser_IdAndRoom_Id(UUID userId, UUID roomId);
+
+    long countByUser_IdAndRoom_IdAndIsDoneTrue(UUID userId, UUID roomId);
 }
 

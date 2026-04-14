@@ -23,6 +23,7 @@ import ru.syncroom.users.repository.UserRepository;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 @Slf4j
@@ -190,11 +191,44 @@ public class PomodoroService {
         return toResponse(session);
     }
 
+    /**
+     * Вызывается из {@link ru.syncroom.study.schedule.PomodoroPhaseScheduler} и из {@link PomodoroTimerService},
+     * когда {@code phaseEndAt} уже не в будущем.
+     */
+    @Transactional
+    public void advancePhaseIfExpired(UUID roomId) {
+        Optional<PomodoroSession> opt = pomodoroRepo.findByRoomIdForUpdate(roomId);
+        if (opt.isEmpty()) {
+            return;
+        }
+        PomodoroSession session = opt.get();
+        String phase = session.getPhase();
+        if ("PAUSED".equals(phase) || "FINISHED".equals(phase)) {
+            return;
+        }
+        if (session.getPhaseEndAt() == null) {
+            return;
+        }
+        if (session.getPhaseEndAt().isAfter(OffsetDateTime.now())) {
+            return;
+        }
+        transitionToNextPhase(session);
+    }
+
     @Transactional
     public PomodoroResponse skip(UUID roomId) {
-        PomodoroSession session = pomodoroRepo.findByRoomId(roomId)
+        PomodoroSession session = pomodoroRepo.findByRoomIdForUpdate(roomId)
                 .orElseThrow(() -> new NotFoundException("Pomodoro is not running in this room"));
 
+        String current = session.getPhase();
+        if ("PAUSED".equals(current) || "FINISHED".equals(current)) {
+            throw new BadRequestException("Cannot skip phase: " + current);
+        }
+        return transitionToNextPhase(session);
+    }
+
+    private PomodoroResponse transitionToNextPhase(PomodoroSession session) {
+        UUID roomId = session.getRoom().getId();
         String current = session.getPhase();
         int currentRound = session.getCurrentRound();
         int total = session.getRoundsTotal();
@@ -242,8 +276,8 @@ public class PomodoroService {
         } else {
             publish(roomId, PomodoroEventType.POMODORO_PHASE_CHANGED,
                     Map.of("phase", nextPhase,
-                           "currentRound", nextRound,
-                           "phaseEndAt", session.getPhaseEndAt().toInstant().toString()));
+                            "currentRound", nextRound,
+                            "phaseEndAt", session.getPhaseEndAt().toInstant().toString()));
         }
 
         return toResponse(session);

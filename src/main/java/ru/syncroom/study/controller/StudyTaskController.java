@@ -11,7 +11,10 @@ import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 import ru.syncroom.study.dto.CreateTaskRequest;
+import ru.syncroom.study.dto.LeaderboardEntryResponse;
+import ru.syncroom.study.dto.TaskLikeMutationResponse;
 import ru.syncroom.study.dto.TaskResponse;
+import ru.syncroom.study.dto.TaskWithLikesResponse;
 import ru.syncroom.study.dto.UpdateTaskRequest;
 import ru.syncroom.study.service.StudyTaskService;
 import ru.syncroom.users.domain.User;
@@ -26,6 +29,26 @@ public class StudyTaskController {
 
     private final StudyTaskService taskService;
 
+    @GetMapping("/api/rooms/{roomId}/tasks/all")
+    @SecurityRequirement(name = "Bearer Authentication")
+    @Operation(summary = "Все таски всех участников комнаты (с лайками)")
+    public List<TaskWithLikesResponse> getAllTasksWithLikes(
+            @PathVariable UUID roomId,
+            @AuthenticationPrincipal User currentUser
+    ) {
+        return taskService.getAllTasksWithLikes(roomId, currentUser.getId());
+    }
+
+    @GetMapping("/api/rooms/{roomId}/leaderboard")
+    @SecurityRequirement(name = "Bearer Authentication")
+    @Operation(summary = "Лидерборд по лайкам на цели в комнате")
+    public List<LeaderboardEntryResponse> getLeaderboard(
+            @PathVariable UUID roomId,
+            @AuthenticationPrincipal User currentUser
+    ) {
+        return taskService.getLeaderboard(roomId, currentUser.getId());
+    }
+
     @GetMapping("/api/rooms/{roomId}/tasks")
     @SecurityRequirement(name = "Bearer Authentication")
     @Operation(summary = "Получить таски текущего пользователя в комнате")
@@ -34,6 +57,28 @@ public class StudyTaskController {
             @AuthenticationPrincipal User currentUser
     ) {
         return taskService.getMyTasks(roomId, currentUser.getId());
+    }
+
+    @PostMapping("/api/rooms/{roomId}/tasks/{taskId}/like")
+    @SecurityRequirement(name = "Bearer Authentication")
+    @Operation(summary = "Лайкнуть цель другого участника")
+    public TaskLikeMutationResponse likeTask(
+            @PathVariable UUID roomId,
+            @PathVariable UUID taskId,
+            @AuthenticationPrincipal User currentUser
+    ) {
+        return taskService.likeTask(roomId, currentUser.getId(), taskId);
+    }
+
+    @DeleteMapping("/api/rooms/{roomId}/tasks/{taskId}/like")
+    @SecurityRequirement(name = "Bearer Authentication")
+    @Operation(summary = "Убрать лайк с цели")
+    public TaskLikeMutationResponse unlikeTask(
+            @PathVariable UUID roomId,
+            @PathVariable UUID taskId,
+            @AuthenticationPrincipal User currentUser
+    ) {
+        return taskService.unlikeTask(roomId, currentUser.getId(), taskId);
     }
 
     @PostMapping("/api/rooms/{roomId}/tasks")

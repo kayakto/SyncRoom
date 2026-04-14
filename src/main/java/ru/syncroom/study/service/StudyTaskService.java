@@ -1,31 +1,56 @@
 package ru.syncroom.study.service;
 
 import lombok.RequiredArgsConstructor;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import ru.syncroom.common.exception.BadRequestException;
 import ru.syncroom.common.exception.NotFoundException;
+import ru.syncroom.rooms.domain.RoomParticipant;
 import ru.syncroom.rooms.repository.RoomParticipantRepository;
 import ru.syncroom.rooms.repository.RoomRepository;
 import ru.syncroom.study.domain.StudyTask;
-import ru.syncroom.study.dto.CreateTaskRequest;
-import ru.syncroom.study.dto.TaskResponse;
-import ru.syncroom.study.dto.UpdateTaskRequest;
+import ru.syncroom.study.domain.TaskLike;
+import ru.syncroom.study.dto.*;
 import ru.syncroom.study.repository.StudyTaskRepository;
+import ru.syncroom.study.repository.TaskLikeRepository;
+import ru.syncroom.study.ws.StudyTaskWsEvent;
+import ru.syncroom.study.ws.StudyTaskWsEventType;
+import ru.syncroom.users.domain.User;
 import ru.syncroom.users.repository.UserRepository;
 
-import java.util.List;
-import java.util.UUID;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
 public class StudyTaskService {
 
+    private static final String TASKS_TOPIC = "/topic/room/%s/tasks";
+
     private final StudyTaskRepository taskRepository;
+    private final TaskLikeRepository likeRepository;
     private final RoomRepository roomRepository;
     private final UserRepository userRepository;
     private final RoomParticipantRepository participantRepository;
+    private final SimpMessagingTemplate messagingTemplate;
+
+    private void publishTaskEvent(UUID roomId, StudyTaskWsEventType type, Object payload) {
+        messagingTemplate.convertAndSend(
+                String.format(TASKS_TOPIC, roomId),
+                StudyTaskWsEvent.of(type, payload));
+    }
+
+    private void requireParticipant(UUID roomId, UUID userId) {
+        if (!participantRepository.existsByRoomIdAndUserId(roomId, userId)) {
+            throw new BadRequestException("User is not a participant of this room");
+        }
+    }
+
+    private StudyTask requireTaskInRoom(UUID taskId, UUID roomId) {
+        return taskRepository.findByIdAndRoom_Id(taskId, roomId)
+                .orElseThrow(() -> new NotFoundException("Task not found"));
+    }
 
     private TaskResponse toResponse(StudyTask t) {
         return TaskResponse.builder()
@@ -38,13 +63,125 @@ public class StudyTaskService {
 
     @Transactional(readOnly = true)
     public List<TaskResponse> getMyTasks(UUID roomId, UUID userId) {
-        if (!participantRepository.existsByRoomIdAndUserId(roomId, userId)) {
-            throw new BadRequestException("User is not a participant of this room");
-        }
+        requireParticipant(roomId, userId);
         return taskRepository.findByUserIdAndRoomIdOrderBySortOrderAsc(userId, roomId)
                 .stream()
                 .map(this::toResponse)
                 .collect(Collectors.toList());
+    }
+
+    @Transactional(readOnly = true)
+    public List<TaskWithLikesResponse> getAllTasksWithLikes(UUID roomId, UUID userId) {
+        requireParticipant(roomId, userId);
+        List<StudyTask> tasks = taskRepository.findByRoom_IdOrderByUser_IdAscSortOrderAsc(roomId);
+        if (tasks.isEmpty()) {
+            return List.of();
+        }
+        Map<UUID, Long> likeCountByTask = new HashMap<>();
+        for (Object[] row : likeRepository.countByTaskGroupedInRoom(roomId)) {
+            likeCountByTask.put((UUID) row[0], (Long) row[1]);
+        }
+        List<UUID> taskIds = tasks.stream().map(StudyTask::getId).toList();
+        Set<UUID> likedByMe = taskIds.isEmpty()
+                ? Set.of()
+                : likeRepository.findTaskIdsLikedByUserAmong(userId, taskIds);
+
+        return tasks.stream().map(t -> {
+            User owner = t.getUser();
+            long likes = likeCountByTask.getOrDefault(t.getId(), 0L);
+            return TaskWithLikesResponse.builder()
+                    .id(t.getId().toString())
+                    .text(t.getText())
+                    .isDone(Boolean.TRUE.equals(t.getIsDone()))
+                    .sortOrder(t.getSortOrder())
+                    .ownerId(owner.getId().toString())
+                    .ownerName(owner.getName())
+                    .likeCount(likes)
+                    .likedByMe(likedByMe.contains(t.getId()))
+                    .build();
+        }).collect(Collectors.toList());
+    }
+
+    @Transactional(readOnly = true)
+    public List<LeaderboardEntryResponse> getLeaderboard(UUID roomId, UUID userId) {
+        requireParticipant(roomId, userId);
+        List<RoomParticipant> participants = participantRepository.findByRoomId(roomId);
+        List<LeaderboardEntryResponse> rows = new ArrayList<>();
+        for (RoomParticipant p : participants) {
+            User u = p.getUser();
+            long totalLikes = likeRepository.countLikesOnTasksOwnedByUserInRoom(u.getId(), roomId);
+            long totalTasks = taskRepository.countByUser_IdAndRoom_Id(u.getId(), roomId);
+            long completedTasks = taskRepository.countByUser_IdAndRoom_IdAndIsDoneTrue(u.getId(), roomId);
+            rows.add(LeaderboardEntryResponse.builder()
+                    .userId(u.getId().toString())
+                    .userName(u.getName())
+                    .avatarUrl(u.getAvatarUrl())
+                    .totalLikes(totalLikes)
+                    .completedTasks(completedTasks)
+                    .totalTasks(totalTasks)
+                    .build());
+        }
+        rows.sort(Comparator.comparingLong(LeaderboardEntryResponse::getTotalLikes).reversed()
+                .thenComparing(LeaderboardEntryResponse::getUserName, Comparator.nullsLast(String::compareToIgnoreCase)));
+        return rows;
+    }
+
+    @Transactional
+    public TaskLikeMutationResponse likeTask(UUID roomId, UUID userId, UUID taskId) {
+        requireParticipant(roomId, userId);
+        StudyTask task = requireTaskInRoom(taskId, roomId);
+        if (task.getUser().getId().equals(userId)) {
+            throw new BadRequestException("Cannot like your own task");
+        }
+        if (likeRepository.existsByTask_IdAndUser_Id(taskId, userId)) {
+            return TaskLikeMutationResponse.builder()
+                    .taskId(taskId.toString())
+                    .likeCount(likeRepository.countByTask_Id(taskId))
+                    .likedByMe(true)
+                    .build();
+        }
+        User user = userRepository.findById(userId).orElseThrow(() -> new NotFoundException("User not found"));
+        likeRepository.save(TaskLike.builder().task(task).user(user).build());
+        long count = likeRepository.countByTask_Id(taskId);
+        publishTaskEvent(roomId, StudyTaskWsEventType.TASK_LIKED, Map.of(
+                "taskId", taskId.toString(),
+                "userId", userId.toString(),
+                "userName", user.getName(),
+                "likeCount", count,
+                "action", "LIKE"
+        ));
+        return TaskLikeMutationResponse.builder()
+                .taskId(taskId.toString())
+                .likeCount(count)
+                .likedByMe(true)
+                .build();
+    }
+
+    @Transactional
+    public TaskLikeMutationResponse unlikeTask(UUID roomId, UUID userId, UUID taskId) {
+        requireParticipant(roomId, userId);
+        requireTaskInRoom(taskId, roomId);
+        long countBefore = likeRepository.countByTask_Id(taskId);
+        if (!likeRepository.existsByTask_IdAndUser_Id(taskId, userId)) {
+            return TaskLikeMutationResponse.builder()
+                    .taskId(taskId.toString())
+                    .likeCount(countBefore)
+                    .likedByMe(false)
+                    .build();
+        }
+        likeRepository.deleteByTask_IdAndUser_Id(taskId, userId);
+        long count = likeRepository.countByTask_Id(taskId);
+        publishTaskEvent(roomId, StudyTaskWsEventType.TASK_UNLIKED, Map.of(
+                "taskId", taskId.toString(),
+                "userId", userId.toString(),
+                "likeCount", count,
+                "action", "UNLIKE"
+        ));
+        return TaskLikeMutationResponse.builder()
+                .taskId(taskId.toString())
+                .likeCount(count)
+                .likedByMe(false)
+                .build();
     }
 
     @Transactional
@@ -100,4 +237,3 @@ public class StudyTaskService {
         taskRepository.delete(task);
     }
 }
-

@@ -183,6 +183,7 @@ POST /api/rooms/{roomId}/pomodoro/start
 - если тело пустое — используются значения по умолчанию (25/5/15/4);
 - только участники комнаты с `context="study"` могут запускать таймер;
 - в комнате может быть только один активный таймер (UNIQUE room_id).
+- **Автосмена фаз на сервере:** раз в 1 с фоновая задача ищет сессии с `phase` WORK/BREAK/LONG_BREAK и `phaseEndAt <= now()`, переводит на следующую фазу и шлёт `POMODORO_PHASE_CHANGED` (или `POMODORO_STOPPED` при завершении). Дублирует и подстраховывает in-memory таймер (`PomodoroTimerService`), в том числе после рестарта JVM. В профиле `test` планировщик отключён (`@Profile("!test")`).
 
 **Ответ `PomodoroResponse`:**
 
@@ -206,9 +207,15 @@ POST /api/rooms/{roomId}/pomodoro/start
 | Метод | URL | Описание |
 |-------|-----|----------|
 | GET | `/api/rooms/{roomId}/tasks` | Мои таски в комнате (`sortOrder` по возрастанию) |
+| GET | `/api/rooms/{roomId}/tasks/all` | Все таски участников с `ownerId`, `likeCount`, `likedByMe` |
+| GET | `/api/rooms/{roomId}/leaderboard` | Лидерборд: лайки на цели, `completedTasks` / `totalTasks` |
+| POST | `/api/rooms/{roomId}/tasks/{taskId}/like` | Лайк чужой цели → `{ taskId, likeCount, likedByMe }` + WS `TASK_LIKED` |
+| DELETE | `/api/rooms/{roomId}/tasks/{taskId}/like` | Снять лайк → то же + WS `TASK_UNLIKED` |
 | POST | `/api/rooms/{roomId}/tasks` | Создать таск |
 | PUT | `/api/rooms/{roomId}/tasks/{taskId}` | Обновить таск (partial update) |
 | DELETE | `/api/rooms/{roomId}/tasks/{taskId}` | Удалить таск |
+
+Правила лайков: только участники той же комнаты; **нельзя** лайкать свою цель; один лайк с пользователя на цель; при удалении цели лайки удаляются каскадом.
 
 **Создание таска:**
 
@@ -309,6 +316,7 @@ Authorization:Bearer <accessToken>
 | `/topic/room/{roomId}/seats` | `SEAT_TAKEN`, `SEAT_LEFT` ✨ |
 | `/topic/room/{roomId}/projector` | `PROJECTOR_STARTED`, `PROJECTOR_STOPPED`, `PROJECTOR_CONTROL`, `STREAM_LIVE`, `STREAM_OFFLINE` ✨ |
 | `/topic/room/{roomId}/pomodoro` | `POMODORO_STARTED`, `POMODORO_PHASE_CHANGED`, `POMODORO_PAUSED`, `POMODORO_RESUMED`, `POMODORO_STOPPED` ✨ |
+| `/topic/room/{roomId}/tasks` | `TASK_LIKED`, `TASK_UNLIKED` (лайки на учебные цели) |
 | `/topic/room/{roomId}/chat` | Сообщения чата: JSON `{ id, userId, userName, text, createdAt }` |
 | `/topic/game/{gameId}` | Quiplash: `GAME_STARTED`, `PROMPT_RECEIVED`, `WAITING_FOR_OTHERS`, `WAITING_FOR_VOTES`, `ROUND_RESULT`, `GAME_FINISHED`; Gartic: `STEP_WRITE`, `STEP_DRAW`, `STEP_GUESS`, `REVEAL_CHAIN`, `GAME_FINISHED` ✨ |
 
@@ -366,6 +374,8 @@ destination:/app/room/{roomId}/projector/control
 | `PROJECTOR_CONTROL` | `.../room/{id}/projector` | WS SEND `/projector/control` | `{ action, positionMs }` |
 | `STREAM_LIVE` | `.../room/{id}/projector` | SRS `on_publish` | `{ videoUrl }` |
 | `STREAM_OFFLINE` | `.../room/{id}/projector` | SRS `on_unpublish` | `{}` |
+| `TASK_LIKED` | `.../room/{id}/tasks` | `POST .../tasks/{id}/like` | `{ taskId, userId, userName, likeCount, action: "LIKE" }` |
+| `TASK_UNLIKED` | `.../room/{id}/tasks` | `DELETE .../tasks/{id}/like` | `{ taskId, userId, likeCount, action: "UNLIKE" }` |
 | `GAME_STARTED` | `.../game/{id}` | `POST /games/{id}/start` | `{ players[] }` |
 | `PLAYER_UNREADY` | `.../game/{id}` | `POST /games/{id}/unready` или WS | `{ userId }` |
 | `PLAYER_LEFT` | `.../game/{id}` | `POST /games/{id}/leave` или выход из комнаты (лобби) | `{ userId }` |
@@ -424,8 +434,16 @@ src/main/java/ru/syncroom/
 │   ├── domain/     # GameSession, GamePlayer, Quiplash* entities, PromptBank
 │   ├── repository/ # Game*/Quiplash*/PromptBank repositories
 │   └── websocket/  # GameWebSocketHandler, GameEventSender, GameTimerService
+├── study/
+│   ├── controller/ # PomodoroController, StudyTaskController
+│   ├── service/    # PomodoroService, PomodoroTimerService, StudyTaskService
+│   ├── schedule/   # PomodoroPhaseScheduler (@Scheduled автосмена фаз, не в test)
+│   ├── domain/     # PomodoroSession, StudyTask, TaskLike
+│   ├── dto/        # Pomodoro*, Task*, Leaderboard*
+│   ├── repository/
+│   └── ws/         # PomodoroEvent, StudyTaskWsEvent
 └── common/
-    ├── config/     # SecurityConfig (CORS), WebSocketConfig, WebSocketSecurityConfig
+    ├── config/     # SecurityConfig, WebSocketConfig, WebSocketSecurityConfig, SchedulingConfig
     ├── security/   # JwtTokenService, JwtAuthenticationFilter
     └── exception/  # GlobalExceptionHandler (400/403/404/409)
 ```
@@ -443,6 +461,7 @@ V8 — добавление полей paused_phase и remaining_seconds к pomo
 V9 — создание game_sessions, game_players, quiplash_* и prompt_bank
 V10 — создание gartic_chains и gartic_steps
 V11 — создание room_messages (чат комнат)
+V12 — таблица task_like (лайки на study_tasks)
 ```
 
 ---
@@ -464,12 +483,13 @@ gradle test
 | `SeatControllerTest` | sit, stand-up, auto-move, 403, 409, 404 | 9 |
 | `ProjectorControllerTest` | REST + SRS callback для проектора | 8 |
 | `PomodoroControllerTest` | REST для помодоро | 6 |
-| `StudyTaskControllerTest` | REST для учебных тасков | 4 |
+| `PomodoroAdvancePhaseTest` | `advancePhaseIfExpired`, BREAK/LONG_BREAK, WS, выборка | 6 |
+| `StudyTaskControllerTest` | Таски, лайки, leaderboard, идемпотентность, не участник | 12 |
 | `GameControllerTest` | REST игры: create/current/ready/unready/leave/start, leaveRoom→игра | 6 |
 | `GameServiceWebSocketTest` | Quiplash + Gartic WS flow, валидации и таймауты | 5 |
 | `RoomChatControllerTest` | История чата: пагинация, пустой список, два автора, доступ | 7 |
 | `RoomChatServiceTest` | Валидация, trim, пагинация, broadcast, граница 4000 символов | 9 |
-| **Итого** | | **153** |
+| **Итого** | | **167** |
 
 Тесты используют H2 in-memory БД, `@MockitoBean SimpMessagingTemplate` (Spring Boot 3.4+), Redis не требуется.
 
