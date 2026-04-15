@@ -10,6 +10,7 @@ import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.annotation.Transactional;
+import ru.syncroom.rooms.domain.ParticipantRole;
 import ru.syncroom.rooms.domain.Room;
 import ru.syncroom.rooms.domain.RoomParticipant;
 import ru.syncroom.rooms.dto.JoinRoomResponse;
@@ -172,6 +173,7 @@ class RoomServiceWebSocketTest {
         assertEquals(1, response.getParticipants().size());
         assertEquals(testUser.getId().toString(), response.getParticipants().get(0).getUserId());
         assertEquals(testUser.getName(), response.getParticipants().get(0).getName());
+        assertEquals(ParticipantRole.OBSERVER, response.getParticipants().get(0).getRole());
     }
 
     @Test
@@ -183,11 +185,12 @@ class RoomServiceWebSocketTest {
     }
 
     @Test
-    @DisplayName("joinRoom response.room.participantCount равен 1 после входа")
-    void testJoinRoom_ResponseParticipantCount() {
+    @DisplayName("joinRoom: participantCount = за столом (0), observerCount = 1 после входа без места")
+    void testJoinRoom_ResponseSeatVsObserverCounts() {
         JoinRoomResponse response = roomService.joinRoom(testRoom.getId(), testUser.getId());
 
-        assertEquals(1, response.getRoom().getParticipantCount());
+        assertEquals(0, response.getRoom().getParticipantCount());
+        assertEquals(1, response.getRoom().getObserverCount());
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -201,6 +204,7 @@ class RoomServiceWebSocketTest {
         participantRepository.save(RoomParticipant.builder()
                 .room(testRoom)
                 .user(testUser)
+                .role(ParticipantRole.OBSERVER)
                 .build());
 
         // When
@@ -220,6 +224,7 @@ class RoomServiceWebSocketTest {
         participantRepository.save(RoomParticipant.builder()
                 .room(testRoom)
                 .user(testUser)
+                .role(ParticipantRole.OBSERVER)
                 .build());
 
         roomService.leaveRoom(testRoom.getId(), testUser.getId());
@@ -236,6 +241,7 @@ class RoomServiceWebSocketTest {
         participantRepository.save(RoomParticipant.builder()
                 .room(testRoom)
                 .user(testUser)
+                .role(ParticipantRole.OBSERVER)
                 .build());
 
         roomService.leaveRoom(testRoom.getId(), testUser.getId());
@@ -257,6 +263,7 @@ class RoomServiceWebSocketTest {
         participantRepository.save(RoomParticipant.builder()
                 .room(testRoom)
                 .user(testUser)
+                .role(ParticipantRole.OBSERVER)
                 .build());
 
         // When
@@ -283,6 +290,7 @@ class RoomServiceWebSocketTest {
         participantRepository.save(RoomParticipant.builder()
                 .room(testRoom)
                 .user(testUser)
+                .role(ParticipantRole.OBSERVER)
                 .build());
 
         roomService.leaveRoomOnWebSocketDisconnect(testUser.getId());

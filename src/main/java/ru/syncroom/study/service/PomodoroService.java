@@ -24,6 +24,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 @Slf4j
@@ -32,6 +33,9 @@ import java.util.UUID;
 public class PomodoroService {
 
     private static final String TOPIC_TEMPLATE = "/topic/room/%s/pomodoro";
+
+    /** Помодоро доступен в учебных и рабочих комнатах (см. TZ модуль 4). */
+    private static final Set<String> POMODORO_ALLOWED_CONTEXTS = Set.of("study", "work");
 
     private final PomodoroSessionRepository pomodoroRepo;
     private final RoomRepository roomRepository;
@@ -46,6 +50,17 @@ public class PomodoroService {
 
     private void publish(UUID roomId, PomodoroEventType type, Object payload) {
         messagingTemplate.convertAndSend(topic(roomId), PomodoroEvent.of(type, payload));
+    }
+
+    private Room requireRoom(UUID roomId) {
+        return roomRepository.findById(roomId)
+                .orElseThrow(() -> new NotFoundException("Room not found"));
+    }
+
+    private void assertPomodoroAllowed(Room room) {
+        if (!POMODORO_ALLOWED_CONTEXTS.contains(room.getContext())) {
+            throw new BadRequestException("Pomodoro is not available in this room type");
+        }
     }
 
     private UserDto toUserDto(User u) {
@@ -77,6 +92,8 @@ public class PomodoroService {
 
     @Transactional(readOnly = true)
     public PomodoroResponse get(UUID roomId) {
+        Room room = requireRoom(roomId);
+        assertPomodoroAllowed(room);
         PomodoroSession session = pomodoroRepo.findByRoomId(roomId)
                 .orElseThrow(() -> new NotFoundException("Pomodoro is not running in this room"));
         return toResponse(session);
@@ -84,12 +101,8 @@ public class PomodoroService {
 
     @Transactional
     public PomodoroResponse start(UUID roomId, UUID userId, PomodoroStartRequest request) {
-        Room room = roomRepository.findById(roomId)
-                .orElseThrow(() -> new NotFoundException("Room not found"));
-
-        if (!"study".equals(room.getContext())) {
-            throw new BadRequestException("Pomodoro is only available for rooms with context='study'");
-        }
+        Room room = requireRoom(roomId);
+        assertPomodoroAllowed(room);
 
         if (!participantRepository.existsByRoomIdAndUserId(roomId, userId)) {
             throw new BadRequestException("User is not a participant of this room");
@@ -134,6 +147,7 @@ public class PomodoroService {
 
     @Transactional
     public PomodoroResponse pause(UUID roomId) {
+        assertPomodoroAllowed(requireRoom(roomId));
         PomodoroSession session = pomodoroRepo.findByRoomId(roomId)
                 .orElseThrow(() -> new NotFoundException("Pomodoro is not running in this room"));
 
@@ -164,6 +178,7 @@ public class PomodoroService {
 
     @Transactional
     public PomodoroResponse resume(UUID roomId) {
+        assertPomodoroAllowed(requireRoom(roomId));
         PomodoroSession session = pomodoroRepo.findByRoomId(roomId)
                 .orElseThrow(() -> new NotFoundException("Pomodoro is not running in this room"));
 
@@ -217,6 +232,7 @@ public class PomodoroService {
 
     @Transactional
     public PomodoroResponse skip(UUID roomId) {
+        assertPomodoroAllowed(requireRoom(roomId));
         PomodoroSession session = pomodoroRepo.findByRoomIdForUpdate(roomId)
                 .orElseThrow(() -> new NotFoundException("Pomodoro is not running in this room"));
 
@@ -285,6 +301,7 @@ public class PomodoroService {
 
     @Transactional
     public void stop(UUID roomId) {
+        assertPomodoroAllowed(requireRoom(roomId));
         pomodoroRepo.deleteByRoomId(roomId);
         publish(roomId, PomodoroEventType.POMODORO_STOPPED, Map.of());
         timerService.cancel(roomId);

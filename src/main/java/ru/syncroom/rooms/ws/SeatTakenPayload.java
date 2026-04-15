@@ -9,6 +9,8 @@ import lombok.Data;
 public class SeatTakenPayload {
     private String seatId;
     private OccupantInfo user;
+    private int participantCount;
+    private int observerCount;
 
     @Data
     @Builder

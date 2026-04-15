@@ -24,13 +24,11 @@ import ru.syncroom.users.domain.User;
 import ru.syncroom.users.repository.UserRepository;
 
 import java.time.OffsetDateTime;
-import java.util.UUID;
 
-import static org.hamcrest.Matchers.hasSize;
-import static org.hamcrest.Matchers.is;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -127,16 +125,32 @@ class PomodoroControllerTest {
     }
 
     @Test
-    @DisplayName("POST /pomodoro/start - 400 для не-study комнаты")
-    void startPomodoro_NotStudyRoom() throws Exception {
+    @DisplayName("POST /pomodoro/start - успех для work-комнаты")
+    void startPomodoro_Success_WorkRoom() throws Exception {
         Room room = createRoom("work");
         addParticipant(room, user);
 
         mockMvc.perform(post("/api/rooms/{roomId}/pomodoro/start", room.getId())
                         .header("Authorization", auth())
                         .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"workDuration\": 8, \"roundsTotal\": 1}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.roomId").value(room.getId().toString()))
+                .andExpect(jsonPath("$.phase").value("WORK"));
+    }
+
+    @Test
+    @DisplayName("POST /pomodoro/start - 400 для leisure/sport (помодоро недоступен)")
+    void startPomodoro_DisallowedContext() throws Exception {
+        Room room = createRoom("leisure");
+        addParticipant(room, user);
+
+        mockMvc.perform(post("/api/rooms/{roomId}/pomodoro/start", room.getId())
+                        .header("Authorization", auth())
+                        .contentType(MediaType.APPLICATION_JSON)
                         .content("{}"))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(containsString("not available")));
     }
 
     @Test
@@ -148,6 +162,18 @@ class PomodoroControllerTest {
         mockMvc.perform(get("/api/rooms/{roomId}/pomodoro", room.getId())
                         .header("Authorization", auth()))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("GET /pomodoro - 400 для комнаты без поддержки помодоро")
+    void getPomodoro_DisallowedContext() throws Exception {
+        Room room = createRoom("sport");
+        addParticipant(room, user);
+
+        mockMvc.perform(get("/api/rooms/{roomId}/pomodoro", room.getId())
+                        .header("Authorization", auth()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(containsString("not available")));
     }
 
     @Test
@@ -212,6 +238,37 @@ class PomodoroControllerTest {
         mockMvc.perform(get("/api/rooms/{roomId}/pomodoro", room.getId())
                         .header("Authorization", auth()))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("work-комната: pause / resume / skip / stop после старта")
+    void workRoom_PauseResumeSkipStop() throws Exception {
+        Room room = createRoom("work");
+        addParticipant(room, user);
+
+        mockMvc.perform(post("/api/rooms/{roomId}/pomodoro/start", room.getId())
+                        .header("Authorization", auth())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"workDuration\": 60, \"breakDuration\": 5, \"roundsTotal\": 2}"))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(post("/api/rooms/{roomId}/pomodoro/pause", room.getId())
+                        .header("Authorization", auth()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.phase").value("PAUSED"));
+
+        mockMvc.perform(post("/api/rooms/{roomId}/pomodoro/resume", room.getId())
+                        .header("Authorization", auth()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.phase").value("WORK"));
+
+        mockMvc.perform(post("/api/rooms/{roomId}/pomodoro/skip", room.getId())
+                        .header("Authorization", auth()))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(delete("/api/rooms/{roomId}/pomodoro", room.getId())
+                        .header("Authorization", auth()))
+                .andExpect(status().isNoContent());
     }
 }
 

@@ -40,6 +40,7 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 @SpringBootTest
 @ActiveProfiles("test")
@@ -119,6 +120,40 @@ class GameServiceWebSocketTest {
         playRound(gameId, u1.getId(), "c1", u2.getId(), "c2", u3.getId(), "c3");
 
         verify(gameEventSender, atLeastOnce()).sendToGame(eq(gameId), eq("GAME_FINISHED"), ArgumentMatchers.any());
+    }
+
+    @Test
+    @DisplayName("startGame запускает с ready>=3 и отправляет PLAYER_KICKED неготовому")
+    void startGame_KicksUnreadyPlayers() {
+        User u4 = createUser("ws4@example.com");
+        addParticipant(room, u4);
+
+        GameResponse game = gameService.createGame(room.getId(), u1.getId(), "QUIPLASH");
+        UUID gameId = UUID.fromString(game.getGameId());
+
+        gameService.markReady(gameId, u1.getId());
+        gameService.markReady(gameId, u2.getId());
+        gameService.markReady(gameId, u3.getId());
+        gameService.markReady(gameId, u4.getId());
+        gameService.markUnready(gameId, u4.getId());
+
+        gameService.startGame(gameId);
+
+        assertEquals(3, gamePlayerRepository.countByGameId(gameId));
+        verify(gameEventSender).sendToPlayer(eq(gameId), eq(u4.getId()), eq("PLAYER_KICKED"), anyMap());
+        verify(gameEventSender, atLeastOnce()).sendToGame(eq(gameId), eq("GAME_STARTED"), anyMap());
+    }
+
+    @Test
+    @DisplayName("disconnect в лобби планирует auto-unready через 10 секунд")
+    void disconnectSchedulesLobbyUnready() {
+        GameResponse game = gameService.createGame(room.getId(), u1.getId(), "QUIPLASH");
+        UUID gameId = UUID.fromString(game.getGameId());
+        gameService.markReady(gameId, u1.getId());
+
+        gameService.scheduleLobbyUnreadyOnDisconnect(u1.getId());
+
+        verify(gameTimerService).schedule(eq("game:" + gameId + ":disconnect:" + u1.getId()), eq(10), any(Runnable.class));
     }
 
     @Test

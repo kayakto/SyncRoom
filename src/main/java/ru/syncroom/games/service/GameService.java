@@ -36,6 +36,8 @@ public class GameService {
     private final UserRepository userRepository;
     private final GameEventSender eventSender;
     private final GameTimerService gameTimerService;
+    private static final int MIN_READY_PLAYERS_TO_START = 3;
+    private static final int LOBBY_DISCONNECT_UNREADY_DELAY_SEC = 10;
     private static final int TOTAL_ROUNDS = 3;
     private static final int GARTIC_TEXT_TIMEOUT_SEC = 60;
     private static final int GARTIC_DRAW_TIMEOUT_SEC = 90;
@@ -80,6 +82,7 @@ public class GameService {
 
     @Transactional
     public void markReady(UUID gameId, UUID userId) {
+        cancelDisconnectUnreadyTimer(gameId, userId);
         GameSession game = gameSessionRepository.findById(gameId).orElseThrow(() -> new NotFoundException("Game not found"));
         GamePlayer player = gamePlayerRepository.findByGameIdAndUserId(gameId, userId).orElseGet(() -> {
             User user = userRepository.findById(userId).orElseThrow(() -> new NotFoundException("User not found"));
@@ -97,6 +100,7 @@ public class GameService {
 
     @Transactional
     public void markUnready(UUID gameId, UUID userId) {
+        cancelDisconnectUnreadyTimer(gameId, userId);
         GameSession game = gameSessionRepository.findById(gameId).orElseThrow(() -> new NotFoundException("Game not found"));
         if (!"LOBBY".equals(game.getStatus())) {
             throw new BadRequestException("Cannot change ready state: game is not in LOBBY");
@@ -137,6 +141,7 @@ public class GameService {
     }
 
     private void removePlayerFromLobby(GameSession game, UUID userId) {
+        cancelDisconnectUnreadyTimer(game.getId(), userId);
         GamePlayer player = gamePlayerRepository.findByGameIdAndUserId(game.getId(), userId)
                 .orElseThrow(() -> new NotFoundException("Player not found"));
         gamePlayerRepository.delete(player);
@@ -145,6 +150,7 @@ public class GameService {
     }
 
     private void removePlayerFromLobbyIfPresent(UUID gameId, UUID userId) {
+        cancelDisconnectUnreadyTimer(gameId, userId);
         gamePlayerRepository.findByGameIdAndUserId(gameId, userId).ifPresent(player -> {
             gamePlayerRepository.delete(player);
             eventSender.sendToGame(gameId, "PLAYER_LEFT", Map.of("userId", userId.toString()));
@@ -172,14 +178,29 @@ public class GameService {
     public void startGame(UUID gameId) {
         GameSession game = gameSessionRepository.findById(gameId).orElseThrow(() -> new NotFoundException("Game not found"));
         List<GamePlayer> players = gamePlayerRepository.findByGameId(gameId);
-        if (players.size() < 3) throw new BadRequestException("At least 3 players required");
-        if (players.stream().anyMatch(p -> !Boolean.TRUE.equals(p.getIsReady()))) {
-            throw new BadRequestException("Not all players are ready");
+        List<GamePlayer> readyPlayers = players.stream()
+                .filter(p -> Boolean.TRUE.equals(p.getIsReady()))
+                .toList();
+        if (readyPlayers.size() < MIN_READY_PLAYERS_TO_START) {
+            throw new BadRequestException("Need at least " + MIN_READY_PLAYERS_TO_START + " ready players");
         }
+
+        List<GamePlayer> unreadyPlayers = players.stream()
+                .filter(p -> !Boolean.TRUE.equals(p.getIsReady()))
+                .toList();
+        for (GamePlayer unready : unreadyPlayers) {
+            cancelDisconnectUnreadyTimer(gameId, unready.getUser().getId());
+            gamePlayerRepository.delete(unready);
+            eventSender.sendToPlayer(gameId, unready.getUser().getId(), "PLAYER_KICKED", Map.of(
+                    "userId", unready.getUser().getId().toString(),
+                    "reason", "Игра началась без вас — вы не были готовы"
+            ));
+        }
+
         game.setStatus("IN_PROGRESS");
         gameSessionRepository.save(game);
 
-        List<Map<String, Object>> playersPayload = players.stream().map(p -> {
+        List<Map<String, Object>> playersPayload = readyPlayers.stream().map(p -> {
             Map<String, Object> m = new HashMap<>();
             m.put("id", p.getUser().getId().toString());
             m.put("name", p.getUser().getName());
@@ -189,7 +210,7 @@ public class GameService {
         eventSender.sendToGame(gameId, "GAME_STARTED", Map.of("players", playersPayload));
 
         if ("GARTIC_PHONE".equals(game.getGameType())) {
-            startGarticGame(game, players);
+            startGarticGame(game, readyPlayers);
             return;
         }
         startRound(game, 1);
@@ -197,6 +218,7 @@ public class GameService {
 
     @Transactional
     public void handleAction(UUID gameId, UUID userId, GameActionMessage msg) {
+        cancelDisconnectUnreadyTimer(gameId, userId);
         String type = msg.getType();
         if ("PLAYER_READY".equals(type)) {
             markReady(gameId, userId);
@@ -557,6 +579,44 @@ public class GameService {
 
     private String garticStepKey(UUID gameId, int stepNumber) {
         return "game:" + gameId + ":gartic:step:" + stepNumber;
+    }
+
+    private String disconnectUnreadyKey(UUID gameId, UUID userId) {
+        return "game:" + gameId + ":disconnect:" + userId;
+    }
+
+    private void cancelDisconnectUnreadyTimer(UUID gameId, UUID userId) {
+        gameTimerService.cancel(disconnectUnreadyKey(gameId, userId));
+    }
+
+    /**
+     * Планирует перевод игрока в unready через 10 секунд после потери последней STOMP-сессии.
+     */
+    public void scheduleLobbyUnreadyOnDisconnect(UUID userId) {
+        List<GamePlayer> lobbyPlayers = gamePlayerRepository.findLobbyPlayersByUserId(userId);
+        if (lobbyPlayers.isEmpty()) {
+            return;
+        }
+        GamePlayer latest = lobbyPlayers.getFirst();
+        UUID gameId = latest.getGame().getId();
+        gameTimerService.schedule(disconnectUnreadyKey(gameId, userId), LOBBY_DISCONNECT_UNREADY_DELAY_SEC, () -> {
+            try {
+                if (!gamePlayerRepository.existsByGameIdAndUserId(gameId, userId)) {
+                    return;
+                }
+                GameSession game = gameSessionRepository.findById(gameId).orElse(null);
+                if (game == null || !"LOBBY".equals(game.getStatus())) {
+                    return;
+                }
+                GamePlayer gp = gamePlayerRepository.findByGameIdAndUserId(gameId, userId).orElse(null);
+                if (gp == null || !Boolean.TRUE.equals(gp.getIsReady())) {
+                    return;
+                }
+                markUnready(gameId, userId);
+            } catch (Exception ignored) {
+                // Disconnect timeout is best-effort and should not break scheduler thread.
+            }
+        });
     }
 
     private String normalizeGarticContent(String type, String content) {

@@ -14,10 +14,13 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
 import ru.syncroom.common.security.JwtTokenService;
+import ru.syncroom.rooms.domain.ParticipantRole;
 import ru.syncroom.rooms.domain.Room;
 import ru.syncroom.rooms.domain.RoomParticipant;
+import ru.syncroom.rooms.domain.Seat;
 import ru.syncroom.rooms.repository.RoomParticipantRepository;
 import ru.syncroom.rooms.repository.RoomRepository;
+import ru.syncroom.rooms.repository.SeatRepository;
 import ru.syncroom.users.domain.AuthProvider;
 import ru.syncroom.users.domain.User;
 import ru.syncroom.users.repository.UserRepository;
@@ -57,6 +60,9 @@ class RoomControllerTest {
         private RoomParticipantRepository participantRepository;
 
         @Autowired
+        private SeatRepository seatRepository;
+
+        @Autowired
         private JwtTokenService jwtTokenService;
 
         @MockitoBean
@@ -72,6 +78,7 @@ class RoomControllerTest {
         @BeforeEach
         void setUp() {
                 participantRepository.deleteAll();
+                seatRepository.deleteAll();
                 roomRepository.deleteAll();
                 userRepository.deleteAll();
 
@@ -117,6 +124,7 @@ class RoomControllerTest {
                 participantRepository.save(RoomParticipant.builder()
                                 .room(room)
                                 .user(user)
+                                .role(ParticipantRole.OBSERVER)
                                 .build());
         }
 
@@ -155,20 +163,22 @@ class RoomControllerTest {
                                 .andExpect(jsonPath("$[0].context").value("sport"))
                                 .andExpect(jsonPath("$[0].title").value("Спортзал"))
                                 .andExpect(jsonPath("$[0].participantCount").value(0))
+                                .andExpect(jsonPath("$[0].observerCount").value(0))
                                 .andExpect(jsonPath("$[0].maxParticipants").value(10))
                                 .andExpect(jsonPath("$[0].isActive").value(true));
         }
 
         @Test
-        @DisplayName("GET /api/rooms - participantCount корректен при наличии участников")
-        void testGetRooms_ParticipantCountAccurate() throws Exception {
+        @DisplayName("GET /api/rooms — participantCount = за столом, observerCount = в лаунже")
+        void testGetRooms_ParticipantAndObserverCounts() throws Exception {
                 Room room = createRoom("work", "Работа", 10, true);
                 addParticipant(room, testUser);
                 addParticipant(room, createUser("u2@example.com"));
 
                 mockMvc.perform(get("/api/rooms").header("Authorization", authHeader()))
                                 .andExpect(status().isOk())
-                                .andExpect(jsonPath("$[0].participantCount").value(2));
+                                .andExpect(jsonPath("$[0].participantCount").value(0))
+                                .andExpect(jsonPath("$[0].observerCount").value(2));
         }
 
         @Test
@@ -180,7 +190,8 @@ class RoomControllerTest {
                 mockMvc.perform(get("/api/rooms").header("Authorization", authHeader()))
                                 .andExpect(status().isOk())
                                 .andExpect(jsonPath("$[0].isActive").value(false))
-                                .andExpect(jsonPath("$[0].participantCount").value(1));
+                                .andExpect(jsonPath("$[0].participantCount").value(0))
+                                .andExpect(jsonPath("$[0].observerCount").value(1));
         }
 
         @Test
@@ -519,9 +530,35 @@ class RoomControllerTest {
                                 .andExpect(jsonPath("$[0].id").value(room.getId().toString()))
                                 .andExpect(jsonPath("$[0].context").value("study"))
                                 .andExpect(jsonPath("$[0].title").value("Школа"))
-                                .andExpect(jsonPath("$[0].participantCount").value(2))
+                                .andExpect(jsonPath("$[0].participantCount").value(0))
+                                .andExpect(jsonPath("$[0].observerCount").value(2))
                                 .andExpect(jsonPath("$[0].maxParticipants").value(5))
                                 .andExpect(jsonPath("$[0].isActive").value(true));
+        }
+
+        @Test
+        @DisplayName("GET /api/rooms после join + sit: один за столом, остальные наблюдатели")
+        void testGetRooms_AfterSit_ShowsSeatedVsObservers() throws Exception {
+                Room room = createRoom("leisure", "Дом", 10, true);
+                User u2 = createUser("u2@rooms.example.com");
+                seatRepository.save(Seat.builder().room(room).x(0.2).y(0.3).occupiedBy(null).build());
+
+                mockMvc.perform(post("/api/rooms/{roomId}/join", room.getId()).header("Authorization", authHeader()))
+                                .andExpect(status().isOk());
+                participantRepository.save(RoomParticipant.builder()
+                                .room(room).user(u2).role(ParticipantRole.OBSERVER).build());
+
+                Seat seat = seatRepository.findByRoomId(room.getId()).get(0);
+                String token2 = jwtTokenService.generateAccessToken(
+                                u2.getId(), u2.getName(), u2.getEmail(), u2.getProvider().getValue());
+                mockMvc.perform(post("/api/rooms/{roomId}/seats/{seatId}/sit", room.getId(), seat.getId())
+                                .header("Authorization", "Bearer " + token2))
+                                .andExpect(status().isOk());
+
+                mockMvc.perform(get("/api/rooms").header("Authorization", authHeader()))
+                                .andExpect(status().isOk())
+                                .andExpect(jsonPath("$[0].participantCount").value(1))
+                                .andExpect(jsonPath("$[0].observerCount").value(1));
         }
 
         @Test

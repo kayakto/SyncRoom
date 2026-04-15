@@ -12,9 +12,14 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
 import ru.syncroom.common.security.JwtTokenService;
+import ru.syncroom.rooms.domain.ParticipantRole;
 import ru.syncroom.rooms.domain.Room;
 import ru.syncroom.rooms.domain.RoomParticipant;
 import ru.syncroom.rooms.domain.Seat;
+import ru.syncroom.rooms.ws.RoomEvent;
+import ru.syncroom.rooms.ws.RoomEventType;
+import ru.syncroom.rooms.ws.SeatLeftPayload;
+import ru.syncroom.rooms.ws.SeatTakenPayload;
 import ru.syncroom.rooms.repository.RoomParticipantRepository;
 import ru.syncroom.rooms.repository.RoomRepository;
 import ru.syncroom.rooms.repository.SeatRepository;
@@ -26,6 +31,9 @@ import java.time.OffsetDateTime;
 
 import static org.hamcrest.Matchers.*;
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -103,8 +111,10 @@ class SeatControllerTest {
                 .isActive(true)
                 .build());
 
-        // testUser is in the room
-        participantRepository.save(RoomParticipant.builder().room(testRoom).user(testUser).build());
+        participantRepository.save(RoomParticipant.builder()
+                .room(testRoom).user(testUser).role(ParticipantRole.OBSERVER).build());
+        participantRepository.save(RoomParticipant.builder()
+                .room(testRoom).user(otherUser).role(ParticipantRole.PARTICIPANT).build());
 
         freeSeat             = createSeat(testRoom, 0.25, 0.40, null);
         occupiedByOtherSeat  = createSeat(testRoom, 0.60, 0.55, otherUser);
@@ -130,6 +140,13 @@ class SeatControllerTest {
         Seat updated = seatRepository.findById(freeSeat.getId()).orElseThrow();
         assertNotNull(updated.getOccupiedBy());
         assertEquals(testUser.getId(), updated.getOccupiedBy().getId());
+
+        verify(messagingTemplate).convertAndSend(
+                eq("/topic/room/" + testRoom.getId() + "/seats"),
+                argThat((RoomEvent ev) -> ev.getType() == RoomEventType.SEAT_TAKEN
+                        && ev.getPayload() instanceof SeatTakenPayload p
+                        && p.getParticipantCount() == 2
+                        && p.getObserverCount() == 0));
     }
 
     @Test
@@ -169,6 +186,19 @@ class SeatControllerTest {
         // Old seat should be free now
         Seat oldSeat = seatRepository.findById(freeSeat.getId()).orElseThrow();
         assertNull(oldSeat.getOccupiedBy());
+
+        verify(messagingTemplate).convertAndSend(
+                eq("/topic/room/" + testRoom.getId() + "/seats"),
+                argThat((RoomEvent ev) -> ev.getType() == RoomEventType.SEAT_LEFT
+                        && ev.getPayload() instanceof SeatLeftPayload p
+                        && p.getParticipantCount() == 2
+                        && p.getObserverCount() == 0));
+        verify(messagingTemplate).convertAndSend(
+                eq("/topic/room/" + testRoom.getId() + "/seats"),
+                argThat((RoomEvent ev) -> ev.getType() == RoomEventType.SEAT_TAKEN
+                        && ev.getPayload() instanceof SeatTakenPayload p
+                        && p.getParticipantCount() == 2
+                        && p.getObserverCount() == 0));
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -209,6 +239,13 @@ class SeatControllerTest {
 
         Seat updated = seatRepository.findById(freeSeat.getId()).orElseThrow();
         assertNull(updated.getOccupiedBy());
+
+        verify(messagingTemplate).convertAndSend(
+                eq("/topic/room/" + testRoom.getId() + "/seats"),
+                argThat((RoomEvent ev) -> ev.getType() == RoomEventType.SEAT_LEFT
+                        && ev.getPayload() instanceof SeatLeftPayload p
+                        && p.getParticipantCount() == 1
+                        && p.getObserverCount() == 1));
     }
 
     // ─────────────────────────────────────────────────────────────────────────

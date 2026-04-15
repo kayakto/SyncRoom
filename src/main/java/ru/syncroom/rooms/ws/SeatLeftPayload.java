@@ -9,4 +9,6 @@ import lombok.Data;
 public class SeatLeftPayload {
     private String seatId;
     private String userId;
+    private int participantCount;
+    private int observerCount;
 }

@@ -13,7 +13,10 @@ public class RoomResponse {
     private String id;
     private String context;
     private String title;
+    /** Число пользователей за столом (занятые места). */
     private int participantCount;
+    /** Участники комнаты без места (наблюдатели в лаунже). */
+    private int observerCount;
     private int maxParticipants;
     private String backgroundPicture;
     private List<SeatDto> seats;
@@ -22,12 +25,13 @@ public class RoomResponse {
     @JsonProperty("isActive")
     private boolean isActive;
 
-    public static RoomResponse from(Room room, int participantCount, List<SeatDto> seats) {
+    public static RoomResponse from(Room room, int participantCount, int observerCount, List<SeatDto> seats) {
         return RoomResponse.builder()
                 .id(room.getId().toString())
                 .context(room.getContext())
                 .title(room.getTitle())
                 .participantCount(participantCount)
+                .observerCount(observerCount)
                 .maxParticipants(room.getMaxParticipants())
                 .backgroundPicture(room.getBackgroundPicture())
                 .seats(seats)
@@ -35,9 +39,9 @@ public class RoomResponse {
                 .build();
     }
 
-    /** Backward-compat overload (no seats) — used internally where seats are not needed */
-    public static RoomResponse from(Room room, int participantCount) {
-        return from(room, participantCount, List.of());
+    /** Overload without seats */
+    public static RoomResponse from(Room room, int participantCount, int observerCount) {
+        return from(room, participantCount, observerCount, List.of());
     }
 }
 

@@ -17,7 +17,7 @@ import ru.syncroom.users.domain.User;
 
 import java.util.UUID;
 
-@Tag(name = "Pomodoro", description = "Помодоро-таймер для учебных комнат")
+@Tag(name = "Pomodoro", description = "Помодоро-таймер для комнат study и work")
 @RestController
 @RequiredArgsConstructor
 public class PomodoroController {
@@ -40,7 +40,7 @@ public class PomodoroController {
     @PostMapping("/api/rooms/{roomId}/pomodoro/start")
     @SecurityRequirement(name = "Bearer Authentication")
     @ResponseStatus(HttpStatus.CREATED)
-    @Operation(summary = "Запустить помодоро в учебной комнате")
+    @Operation(summary = "Запустить помодоро (комната study или work)")
     public PomodoroResponse start(
             @PathVariable UUID roomId,
             @AuthenticationPrincipal User currentUser,

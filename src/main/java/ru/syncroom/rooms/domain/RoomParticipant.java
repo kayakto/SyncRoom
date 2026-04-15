@@ -33,6 +33,11 @@ public class RoomParticipant {
     @Column(name = "joined_at", nullable = false, updatable = false)
     private OffsetDateTime joinedAt;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "role", nullable = false, length = 20)
+    @Builder.Default
+    private ParticipantRole role = ParticipantRole.OBSERVER;
+
     @PrePersist
     void onCreate() {
         joinedAt = OffsetDateTime.now();

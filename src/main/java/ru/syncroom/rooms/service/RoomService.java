@@ -7,6 +7,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import ru.syncroom.common.exception.BadRequestException;
 import ru.syncroom.common.exception.NotFoundException;
+import ru.syncroom.rooms.domain.ParticipantRole;
 import ru.syncroom.rooms.domain.Room;
 import ru.syncroom.rooms.domain.RoomParticipant;
 import ru.syncroom.rooms.dto.JoinRoomResponse;
@@ -66,9 +67,10 @@ public class RoomService {
                 roomRepository.save(room);
             }
 
+            int seated = seatRepository.countOccupiedByRoomId(room.getId());
             List<SeatDto> seats = seatRepository.findByRoomId(room.getId())
                     .stream().map(SeatDto::from).toList();
-            return RoomResponse.from(room, count, seats);
+            return RoomResponse.from(room, seated, count - seated, seats);
         }).toList();
     }
 
@@ -108,11 +110,11 @@ public class RoomService {
                     .build());
 
             participantRepository.save(RoomParticipant.builder()
-                    .room(newRoom).user(user).build());
+                    .room(newRoom).user(user).role(ParticipantRole.OBSERVER).build());
             actualRoomId = newRoom.getId();
         } else {
             participantRepository.save(RoomParticipant.builder()
-                    .room(room).user(user).build());
+                    .room(room).user(user).role(ParticipantRole.OBSERVER).build());
 
             if (currentCount + 1 >= room.getMaxParticipants()) {
                 room.setIsActive(false);
@@ -131,7 +133,8 @@ public class RoomService {
 
         Room actualRoom = roomRepository.findById(actualRoomId).orElseThrow();
         List<RoomParticipant> allParticipants = participantRepository.findByRoomId(actualRoomId);
-        int participantCount = allParticipants.size();
+        int totalMembers = allParticipants.size();
+        int seatedCount = seatRepository.countOccupiedByRoomId(actualRoomId);
 
         RoomParticipant myParticipation = participantRepository
                 .findByRoomIdAndUserId(actualRoomId, userId).orElseThrow();
@@ -146,7 +149,7 @@ public class RoomService {
                 .stream().map(SeatDto::from).toList();
 
         return JoinRoomResponse.builder()
-                .room(RoomResponse.from(actualRoom, participantCount, seats))
+                .room(RoomResponse.from(actualRoom, seatedCount, totalMembers - seatedCount, seats))
                 .participants(participantDtos)
                 .build();
     }
@@ -214,9 +217,10 @@ public class RoomService {
         return participations.stream().map(p -> {
             Room room = p.getRoom();
             int count = participantRepository.countByRoomId(room.getId());
+            int seated = seatRepository.countOccupiedByRoomId(room.getId());
             List<SeatDto> seats = seatRepository.findByRoomId(room.getId())
                     .stream().map(SeatDto::from).toList();
-            return RoomResponse.from(room, count, seats);
+            return RoomResponse.from(room, seated, count - seated, seats);
         }).toList();
     }
 }

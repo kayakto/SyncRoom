@@ -1,6 +1,10 @@
 package ru.syncroom.rooms.repository;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import ru.syncroom.rooms.domain.ParticipantRole;
 import ru.syncroom.rooms.domain.RoomParticipant;
 
 import java.util.List;
@@ -25,4 +29,11 @@ public interface RoomParticipantRepository extends JpaRepository<RoomParticipant
 
     /** Removes a specific user from a specific room. */
     void deleteByRoomIdAndUserId(UUID roomId, UUID userId);
+
+    @Modifying(flushAutomatically = true, clearAutomatically = false)
+    @Query("UPDATE RoomParticipant p SET p.role = :role WHERE p.room.id = :roomId AND p.user.id = :userId")
+    int updateRoleByRoomIdAndUserId(
+            @Param("roomId") UUID roomId,
+            @Param("userId") UUID userId,
+            @Param("role") ParticipantRole role);
 }

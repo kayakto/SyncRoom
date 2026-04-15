@@ -9,9 +9,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import ru.syncroom.common.exception.BadRequestException;
 import ru.syncroom.common.exception.NotFoundException;
+import ru.syncroom.rooms.domain.ParticipantRole;
 import ru.syncroom.rooms.domain.Room;
 import ru.syncroom.rooms.domain.Seat;
 import ru.syncroom.rooms.dto.SeatDto;
+import ru.syncroom.rooms.repository.RoomParticipantRepository;
 import ru.syncroom.rooms.repository.RoomRepository;
 import ru.syncroom.rooms.repository.SeatRepository;
 import ru.syncroom.rooms.ws.RoomEvent;
@@ -40,6 +42,7 @@ public class SeatService {
 
     private final SeatRepository seatRepository;
     private final RoomRepository roomRepository;
+    private final RoomParticipantRepository participantRepository;
     private final UserRepository userRepository;
     private final SimpMessagingTemplate messagingTemplate;
 
@@ -55,7 +58,7 @@ public class SeatService {
         return String.format(SEATS_TOPIC, roomId);
     }
 
-    private void publishSeatTaken(UUID roomId, Seat seat, User user) {
+    private void publishSeatTaken(UUID roomId, Seat seat, User user, int participantCount, int observerCount) {
         SeatTakenPayload payload = SeatTakenPayload.builder()
                 .seatId(seat.getId().toString())
                 .user(SeatTakenPayload.OccupantInfo.builder()
@@ -63,18 +66,31 @@ public class SeatService {
                         .name(user.getName())
                         .avatarUrl(user.getAvatarUrl())
                         .build())
+                .participantCount(participantCount)
+                .observerCount(observerCount)
                 .build();
         messagingTemplate.convertAndSend(seatsTopic(roomId), RoomEvent.of(RoomEventType.SEAT_TAKEN, payload));
         invalidateCache(roomId);
     }
 
-    private void publishSeatLeft(UUID roomId, UUID seatId, UUID userId) {
+    private void publishSeatLeft(UUID roomId, UUID seatId, UUID userId, int participantCount, int observerCount) {
         SeatLeftPayload payload = SeatLeftPayload.builder()
                 .seatId(seatId.toString())
                 .userId(userId.toString())
+                .participantCount(participantCount)
+                .observerCount(observerCount)
                 .build();
         messagingTemplate.convertAndSend(seatsTopic(roomId), RoomEvent.of(RoomEventType.SEAT_LEFT, payload));
         invalidateCache(roomId);
+    }
+
+    private int seatedCount(UUID roomId) {
+        return seatRepository.countOccupiedByRoomId(roomId);
+    }
+
+    private int observerCount(UUID roomId) {
+        int total = participantRepository.countByRoomId(roomId);
+        return total - seatedCount(roomId);
     }
 
     /** Invalidate the Redis cache for this room's seat state */
@@ -120,19 +136,28 @@ public class SeatService {
             return SeatDto.from(seat);
         }
 
-        // Auto-move: if the user was sitting somewhere else in this room, free that seat first
+        // Auto-move: if the user was sitting somewhere else in this room, free that seat first (без WS до конца операции)
+        final UUID[] previousSeatId = { null };
         seatRepository.findByRoomIdAndOccupiedById(roomId, userId).ifPresent(oldSeat -> {
-            UUID oldSeatId = oldSeat.getId();
+            previousSeatId[0] = oldSeat.getId();
             oldSeat.setOccupiedBy(null);
             seatRepository.save(oldSeat);
-            publishSeatLeft(roomId, oldSeatId, userId);
-            log.debug("Auto-moved user {} from seat {} in room {}", userId, oldSeatId, roomId);
+            seatRepository.flush();
+            log.debug("Auto-moved user {} from seat {} in room {}", userId, previousSeatId[0], roomId);
         });
 
         // Occupy new seat
         seat.setOccupiedBy(user);
         Seat saved = seatRepository.save(seat);
-        publishSeatTaken(roomId, saved, user);
+        seatRepository.flush();
+        participantRepository.updateRoleByRoomIdAndUserId(roomId, userId, ParticipantRole.PARTICIPANT);
+
+        int seated = seatedCount(roomId);
+        int observers = observerCount(roomId);
+        if (previousSeatId[0] != null) {
+            publishSeatLeft(roomId, previousSeatId[0], userId, seated, observers);
+        }
+        publishSeatTaken(roomId, saved, user, seated, observers);
 
         log.debug("User {} sat on seat {} in room {}", userId, seatId, roomId);
         return SeatDto.from(saved);
@@ -158,7 +183,11 @@ public class SeatService {
 
         seat.setOccupiedBy(null);
         Seat saved = seatRepository.save(seat);
-        publishSeatLeft(roomId, seatId, userId);
+        seatRepository.flush();
+        participantRepository.updateRoleByRoomIdAndUserId(roomId, userId, ParticipantRole.OBSERVER);
+        int seated = seatedCount(roomId);
+        int observers = observerCount(roomId);
+        publishSeatLeft(roomId, seatId, userId, seated, observers);
 
         log.debug("User {} stood up from seat {} in room {}", userId, seatId, roomId);
         return SeatDto.from(saved);
@@ -175,7 +204,11 @@ public class SeatService {
             UUID seatId = seat.getId();
             int updated = seatRepository.releaseByRoomIdAndUserId(roomId, userId);
             if (updated > 0) {
-                publishSeatLeft(roomId, seatId, userId);
+                seatRepository.flush();
+                participantRepository.updateRoleByRoomIdAndUserId(roomId, userId, ParticipantRole.OBSERVER);
+                int seated = seatedCount(roomId);
+                int observers = observerCount(roomId);
+                publishSeatLeft(roomId, seatId, userId, seated, observers);
                 log.debug("Released seat for user {} in room {} (roomLeave/disconnect)", userId, roomId);
             }
         });

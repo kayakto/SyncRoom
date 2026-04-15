@@ -28,6 +28,8 @@ import java.util.UUID;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.hamcrest.Matchers.hasSize;
+import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.hasItem;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -166,6 +168,39 @@ class GameControllerTest {
 
         mockMvc.perform(post("/api/games/{gameId}/start", gid).header("Authorization", "Bearer " + t1))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @DisplayName("POST /start — запускает игру с 3+ ready и исключает неготовых")
+    void startGame_WithFourPlayers_KicksUnreadyAndStarts() throws Exception {
+        User u4 = createUser("g4@example.com");
+        String t4 = token(u4);
+        addParticipant(room, u4);
+
+        String gameId = extractGameId(mockMvc.perform(post("/api/rooms/{roomId}/games", room.getId())
+                        .header("Authorization", "Bearer " + t1)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"gameType\":\"QUIPLASH\"}"))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString());
+        UUID gid = UUID.fromString(gameId);
+
+        mockMvc.perform(post("/api/games/{gameId}/ready", gid).header("Authorization", "Bearer " + t1)).andExpect(status().isOk());
+        mockMvc.perform(post("/api/games/{gameId}/ready", gid).header("Authorization", "Bearer " + t2)).andExpect(status().isOk());
+        mockMvc.perform(post("/api/games/{gameId}/ready", gid).header("Authorization", "Bearer " + t3)).andExpect(status().isOk());
+        // u4 remains unready
+        mockMvc.perform(post("/api/games/{gameId}/ready", gid).header("Authorization", "Bearer " + t4)).andExpect(status().isOk());
+        mockMvc.perform(post("/api/games/{gameId}/unready", gid).header("Authorization", "Bearer " + t4)).andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/games/{gameId}/start", gid)
+                        .header("Authorization", "Bearer " + t1))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/rooms/{roomId}/games/current", room.getId()).header("Authorization", "Bearer " + t1))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("IN_PROGRESS"))
+                .andExpect(jsonPath("$.players", hasSize(3)))
+                .andExpect(jsonPath("$.players[*].id", not(hasItem(u4.getId().toString()))));
     }
 
     @Test

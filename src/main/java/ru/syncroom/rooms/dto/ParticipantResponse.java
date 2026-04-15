@@ -2,6 +2,7 @@ package ru.syncroom.rooms.dto;
 
 import lombok.Builder;
 import lombok.Data;
+import ru.syncroom.rooms.domain.ParticipantRole;
 import ru.syncroom.rooms.domain.RoomParticipant;
 import ru.syncroom.users.domain.User;
 
@@ -18,6 +19,7 @@ public class ParticipantResponse {
     private String userId;
     private String name;
     private String avatarUrl;
+    private ParticipantRole role;
     private OffsetDateTime joinedAt;
 
     public static ParticipantResponse from(RoomParticipant participant) {
@@ -26,6 +28,7 @@ public class ParticipantResponse {
                 .userId(user.getId().toString())
                 .name(user.getName())
                 .avatarUrl(user.getAvatarUrl())
+                .role(participant.getRole())
                 .joinedAt(participant.getJoinedAt())
                 .build();
     }

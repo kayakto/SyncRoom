@@ -91,6 +91,11 @@ APP_PORT=8080
 > **Правило:** 1 пользователь = 1 комната одновременно.  
 > При заполнении комнаты автоматически создаётся новая с теми же параметрами.
 
+**Счётчики в `RoomResponse`:**
+
+- `participantCount` — сколько человек **за столом** (занятые места в `seats[]`);
+- `observerCount` — сколько **в комнате без места** (лаунж / наблюдатели). После `POST /join` пользователь по умолчанию наблюдатель; после `POST .../sit` становится участником за столом; `POST .../leave` (место) снова делает наблюдателем.
+
 **Структура комнаты** включает `backgroundPicture` и `seats[]` (с нормализованными координатами 0.0–1.0).
 
 **Чат комнаты** (любой `context`, активная или пассивная комната):
@@ -157,12 +162,14 @@ APP_PORT=8080
 - Включить проектор может любой участник комнаты; при этом хостом становится он, старая сессия затирается.
 - Выключить (`DELETE`) и управлять воспроизведением (play/pause/seek) может только текущий хост.
 
-### Pomodoro — общий таймер для учебных комнат
+### Pomodoro — общий таймер для учебных и рабочих комнат
+
+Доступно при `context="study"` **или** `context="work"`. Для `sport` / `leisure` все эндпоинты помодоро возвращают `400`.
 
 | Метод | URL | Описание |
 |-------|-----|----------|
 | GET | `/api/rooms/{roomId}/pomodoro` | Текущее состояние помодоро-таймера |
-| POST | `/api/rooms/{roomId}/pomodoro/start` | Запустить помодоро (только `context="study"`) |
+| POST | `/api/rooms/{roomId}/pomodoro/start` | Запустить помодоро (`study` или `work`) |
 | POST | `/api/rooms/{roomId}/pomodoro/pause` | Поставить таймер на паузу |
 | POST | `/api/rooms/{roomId}/pomodoro/resume` | Продолжить после паузы |
 | POST | `/api/rooms/{roomId}/pomodoro/skip` | Пропустить текущую фазу (WORK/BREAK/LONG_BREAK) |
@@ -181,7 +188,7 @@ POST /api/rooms/{roomId}/pomodoro/start
 ```
 
 - если тело пустое — используются значения по умолчанию (25/5/15/4);
-- только участники комнаты с `context="study"` могут запускать таймер;
+- только участники комнаты с `context="study"` или `context="work"` могут пользоваться помодоро (все методы, включая `GET` / `DELETE`);
 - в комнате может быть только один активный таймер (UNIQUE room_id).
 - **Автосмена фаз на сервере:** раз в 1 с фоновая задача ищет сессии с `phase` WORK/BREAK/LONG_BREAK и `phaseEndAt <= now()`, переводит на следующую фазу и шлёт `POMODORO_PHASE_CHANGED` (или `POMODORO_STOPPED` при завершении). Дублирует и подстраховывает in-memory таймер (`PomodoroTimerService`), в том числе после рестарта JVM. В профиле `test` планировщик отключён (`@Profile("!test")`).
 
@@ -249,6 +256,8 @@ POST /api/rooms/{roomId}/tasks
 | POST | `/api/games/{gameId}/unready` | Снять готовность (только `LOBBY`) |
 | POST | `/api/games/{gameId}/leave` | Выйти из лобби игры (только `LOBBY`); если игроков не осталось — сессия удаляется |
 | POST | `/api/games/{gameId}/start` | Старт игры (минимум 3 ready игрока) |
+
+При старте учитываются только игроки с `isReady=true`: если ready-игроков 3+, игра стартует сразу, а неготовые удаляются из лобби и получают персональное WS-событие `PLAYER_KICKED`.
 
 При **`POST /api/rooms/{roomId}/leave`** сервер также убирает пользователя из активной игры этой комнаты: в **LOBBY** — как `leave`, при **IN_PROGRESS** — игра **отменяется** (`GAME_CANCELLED`), таймеры сбрасываются, сессия удаляется.
 
@@ -365,10 +374,10 @@ destination:/app/room/{roomId}/projector/control
 
 | Тип | Топик | Триггер | Payload |
 |-----|-------|---------|---------|
-| `PARTICIPANT_JOINED` | `.../room/{id}` | `POST /join` | `{ userId, name, avatarUrl, joinedAt }` |
-| `PARTICIPANT_LEFT` | `.../room/{id}` | `POST /leave` или закрытие **последнего** STOMP (с JWT) | `{ userId, name, avatarUrl }` |
-| `SEAT_TAKEN` | `.../room/{id}/seats` | `POST /sit` | `{ seatId, user: { id, name, avatarUrl } }` |
-| `SEAT_LEFT` | `.../room/{id}/seats` | `POST /leave seat`, выход из комнаты или закрытие **последнего** STOMP (с JWT) | `{ seatId, userId }` |
+| `PARTICIPANT_JOINED` | `.../room/{id}` | `POST /join` | `{ userId, name, avatarUrl, joinedAt, role }` (`OBSERVER` \| `PARTICIPANT`) |
+| `PARTICIPANT_LEFT` | `.../room/{id}` | `POST /leave` или закрытие **последнего** STOMP (с JWT) | `{ userId, name, avatarUrl }` (без `role`) |
+| `SEAT_TAKEN` | `.../room/{id}/seats` | `POST /sit` | `{ seatId, user: { id, name, avatarUrl }, participantCount, observerCount }` |
+| `SEAT_LEFT` | `.../room/{id}/seats` | `POST /leave seat`, выход из комнаты или закрытие **последнего** STOMP (с JWT) | `{ seatId, userId, participantCount, observerCount }` |
 | `PROJECTOR_STARTED` | `.../room/{id}/projector` | `POST /projector` | `{ host, mode, videoUrl, videoTitle, streamKey? }` |
 | `PROJECTOR_STOPPED` | `.../room/{id}/projector` | `DELETE /projector` или выход хоста | `{ hostId }` |
 | `PROJECTOR_CONTROL` | `.../room/{id}/projector` | WS SEND `/projector/control` | `{ action, positionMs }` |
@@ -377,6 +386,7 @@ destination:/app/room/{roomId}/projector/control
 | `TASK_LIKED` | `.../room/{id}/tasks` | `POST .../tasks/{id}/like` | `{ taskId, userId, userName, likeCount, action: "LIKE" }` |
 | `TASK_UNLIKED` | `.../room/{id}/tasks` | `DELETE .../tasks/{id}/like` | `{ taskId, userId, likeCount, action: "UNLIKE" }` |
 | `GAME_STARTED` | `.../game/{id}` | `POST /games/{id}/start` | `{ players[] }` |
+| `PLAYER_KICKED` | `.../game/{id}` (user queue) | `POST /games/{id}/start` когда игрок не готов | `{ userId, reason }` |
 | `PLAYER_UNREADY` | `.../game/{id}` | `POST /games/{id}/unready` или WS | `{ userId }` |
 | `PLAYER_LEFT` | `.../game/{id}` | `POST /games/{id}/leave` или выход из комнаты (лобби) | `{ userId }` |
 | `GAME_CANCELLED` | `.../game/{id}` | выход из комнаты при игре `IN_PROGRESS` | `{ reason: "PLAYER_LEFT_ROOM" }` |
@@ -482,11 +492,11 @@ gradle test
 | `WebSocketRoomDisconnectListenerTest` | STOMP disconnect → leave комнаты, мультисессии | 3 |
 | `SeatControllerTest` | sit, stand-up, auto-move, 403, 409, 404 | 9 |
 | `ProjectorControllerTest` | REST + SRS callback для проектора | 8 |
-| `PomodoroControllerTest` | REST для помодоро | 6 |
+| `PomodoroControllerTest` | REST для помодоро (study + work) | 9 |
 | `PomodoroAdvancePhaseTest` | `advancePhaseIfExpired`, BREAK/LONG_BREAK, WS, выборка | 6 |
 | `StudyTaskControllerTest` | Таски, лайки, leaderboard, идемпотентность, не участник | 12 |
-| `GameControllerTest` | REST игры: create/current/ready/unready/leave/start, leaveRoom→игра | 6 |
-| `GameServiceWebSocketTest` | Quiplash + Gartic WS flow, валидации и таймауты | 5 |
+| `GameControllerTest` | REST игры: create/current/ready/unready/leave/start, leaveRoom→игра | 7 |
+| `GameServiceWebSocketTest` | Quiplash + Gartic WS flow, валидации, `PLAYER_KICKED` и таймауты | 6 |
 | `RoomChatControllerTest` | История чата: пагинация, пустой список, два автора, доступ | 7 |
 | `RoomChatServiceTest` | Валидация, trim, пагинация, broadcast, граница 4000 символов | 9 |
 | **Итого** | | **167** |
