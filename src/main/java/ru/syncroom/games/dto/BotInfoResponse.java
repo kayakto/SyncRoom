@@ -5,12 +5,9 @@ import lombok.Data;
 
 @Data
 @Builder
-public class GamePlayerDto {
+public class BotInfoResponse {
     private String id;
     private String name;
     private String avatarUrl;
-    private Boolean isBot;
-    private Boolean isReady;
-    private Integer score;
+    private String botType;
 }
-

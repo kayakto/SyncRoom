@@ -19,7 +19,7 @@ Spring Boot backend для приложения SyncRoom с JWT-авториза
 
 ### Docker (рекомендуется)
 ```bash
-docker-compose up -d        # запустить
+docker-compose up -d        # запустить БЕЗ БОТОВ
 docker-compose down         # остановить
 docker-compose down -v      # остановить + удалить данные
 docker-compose up -d --build  # пересобрать
@@ -27,6 +27,18 @@ docker-compose logs -f app  # логи
 ```
 Приложение: http://localhost:8080  
 Swagger UI: http://localhost:8080/swagger-ui.html
+
+### Docker + Local AI (one-button)
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.local-ai.yml up -d --build
+```
+
+Этот режим поднимает весь backend и локальные AI-сервисы для ботов:
+- `app`, `postgres`, `media`
+- `inference-mock`
+- `ollama` (+ авто-pull `llava:7b`)
+- `local-draw`
 
 ### Gradle
 ```bash
@@ -45,7 +57,79 @@ JWT_REFRESH_EXPIRATION=2592000000  # 30 дней
 REDIS_HOST=localhost               # опционально
 REDIS_PORT=6379                    # опционально
 APP_PORT=8080
+BOTS_INFERENCE_ENABLED=true
+BOTS_INFERENCE_DRAW_URL=http://localhost:8091/api/draw
+BOTS_INFERENCE_GUESS_URL=http://localhost:8091/api/guess
 ```
+
+### Локальный inference для игровых ботов (DRAW/GUESS)
+
+Мини-сервис лежит в `inference-mock/` и совместим с `GameService` без изменения API.
+
+Самый простой запуск вообще без ручной установки локальных ИИ:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.local-ai.yml up -d --build
+```
+
+Что поднимется:
+
+- `ollama` с автозагрузкой модели `llava:7b` для подписи/угадывания картинки;
+- `local-draw` — совместимый draw-service с локальной tiny Stable Diffusion моделью;
+- `inference-mock` — прокси-адаптер для `SyncRoom`;
+- сам `SyncRoom`.
+
+Сгенерированные изображения автоматически сохраняются в папку
+`img-generated` в корне проекта (в формате `.png`).
+
+Важно:
+
+- первый запуск может идти долго, потому что контейнеры скачивают модели;
+- по умолчанию draw-service использует `segmind/tiny-sd`, это компромисс между скоростью и качеством;
+- `Ollama` будет доступен на `http://localhost:11434`, draw-service на `http://localhost:7860`.
+
+Быстрый запуск:
+
+```bash
+cd inference-mock
+python -m venv .venv
+. .venv/Scripts/activate
+pip install -r requirements.txt
+uvicorn app:app --host 0.0.0.0 --port 8091
+```
+
+Проверка:
+
+```bash
+curl http://localhost:8091/health
+```
+
+Режимы:
+
+- `INFERENCE_PROVIDER=local` — локальный режим по умолчанию.
+- `INFERENCE_PROVIDER=ollama` — локальный vision через Ollama (`llava:7b`), без внешних API.
+- `INFERENCE_PROVIDER=local` — только локальные нейросети:
+  - draw: `LOCAL_DRAW_URL` (например A1111 / SD WebUI) -> mock
+  - guess: `LOCAL_GUESS_URL` или Ollama -> mock
+
+Переменные для локального backend:
+
+```bash
+INFERENCE_PROVIDER=local
+LOCAL_DRAW_URL=http://localhost:7860/sdapi/v1/txt2img
+LOCAL_GUESS_URL=http://localhost:8100/api/guess  # опционально
+OLLAMA_URL=http://127.0.0.1:11434
+OLLAMA_VISION_MODEL=llava:7b
+```
+
+Для Docker Compose сервис `inference-mock` уже добавлен и включается автоматически.
+
+### Будет ли backend работать без микросервиса ботов?
+
+Да, backend работает и без локального AI-оверлея:
+- если запускать только `docker-compose.yml`, API и игры работают;
+- боты в Gartic тоже работают, но генерация изображений/подписей идёт через fallback (упрощённый результат);
+- если нужен именно AI-качество, запускай с `docker-compose.local-ai.yml`.
 
 ---
 

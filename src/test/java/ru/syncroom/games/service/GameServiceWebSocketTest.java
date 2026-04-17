@@ -32,6 +32,8 @@ import ru.syncroom.users.repository.UserRepository;
 
 import java.time.OffsetDateTime;
 import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -269,6 +271,33 @@ class GameServiceWebSocketTest {
         assertTrue(hasGuessForU1, "u1 should receive STEP_GUESS");
     }
 
+    @Test
+    @DisplayName("Gartic с ботами: боты делают шаги и игра завершается")
+    void garticBotsTakeStepsAndGameFinishes() {
+        GameResponse game = gameService.createGame(room.getId(), u1.getId(), "GARTIC_PHONE");
+        UUID gameId = UUID.fromString(game.getGameId());
+
+        gameService.addBots(gameId, u1.getId(), "GARTIC_DRAWER", 2);
+        gameService.markReady(gameId, u1.getId());
+        gameService.startGame(gameId);
+
+        assertEquals(3, gamePlayerRepository.countByGameId(gameId));
+        assertEquals(2, gamePlayerRepository.findByGameId(gameId).stream().filter(gp -> gp.getBotUser() != null).count());
+
+        runBotTasks(gameId, 1);
+        submitPhrase(gameId, u1.getId(), "human phrase");
+
+        runBotTasks(gameId, 2);
+        submitDrawing(gameId, u1.getId(), "data:image/png;base64,AA==");
+
+        runBotTasks(gameId, 3);
+        submitGuess(gameId, u1.getId(), "human guess");
+
+        verify(gameEventSender, atLeastOnce()).sendToGame(eq(gameId), eq("BOT_ADDED"), anyMap());
+        verify(gameEventSender, atLeastOnce()).sendToGame(eq(gameId), eq("REVEAL_CHAIN"), anyMap());
+        verify(gameEventSender, atLeastOnce()).sendToGame(eq(gameId), eq("GAME_FINISHED"), anyMap());
+    }
+
     private void playRound(UUID gameId, UUID p1, String a1, UUID p2, String a2, UUID p3, String a3) {
         QuiplashPrompt prompt = promptRepository.findFirstByGameIdOrderByRoundDesc(gameId).orElseThrow();
 
@@ -339,6 +368,19 @@ class GameServiceWebSocketTest {
         Runnable task = scheduledTasks.get(key);
         if (task != null) {
             task.run();
+        }
+    }
+
+    private void runBotTasks(UUID gameId, int step) {
+        String suffix = ":step:" + step;
+        List<String> keys = new ArrayList<>(scheduledTasks.keySet());
+        for (String key : keys) {
+            if (key.startsWith("game:" + gameId + ":bot:") && key.endsWith(suffix)) {
+                Runnable task = scheduledTasks.remove(key);
+                if (task != null) {
+                    task.run();
+                }
+            }
         }
     }
 

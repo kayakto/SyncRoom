@@ -12,10 +12,12 @@ import java.util.UUID;
 public interface GamePlayerRepository extends JpaRepository<GamePlayer, UUID> {
     List<GamePlayer> findByGameId(UUID gameId);
     Optional<GamePlayer> findByGameIdAndUserId(UUID gameId, UUID userId);
+    Optional<GamePlayer> findByGameIdAndBotUserId(UUID gameId, UUID botUserId);
     long countByGameId(UUID gameId);
     long countByGameIdAndIsReadyTrue(UUID gameId);
 
     boolean existsByGameIdAndUserId(UUID gameId, UUID userId);
+    boolean existsByGameIdAndBotUserId(UUID gameId, UUID botUserId);
 
     @Query("""
             SELECT gp FROM GamePlayer gp

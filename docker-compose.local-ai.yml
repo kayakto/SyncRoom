@@ -1,0 +1,63 @@
+services:
+  inference-mock:
+    environment:
+      INFERENCE_PROVIDER: local
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_VISION_MODEL: llava:7b
+      LOCAL_DRAW_URL: http://local-draw:7860/sdapi/v1/txt2img
+      LOCAL_GUESS_URL: ""
+    depends_on:
+      ollama:
+        condition: service_started
+      local-draw:
+        condition: service_started
+    volumes:
+      - ./img-generated:/generated
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: syncroom-ollama
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - syncroom-network
+    restart: unless-stopped
+
+  ollama-pull:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_started
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        sleep 8
+        ollama pull llava:7b
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    networks:
+      - syncroom-network
+    restart: "no"
+
+  local-draw:
+    build:
+      context: ./local-draw-service
+      dockerfile: Dockerfile
+    container_name: syncroom-local-draw
+    ports:
+      - "${LOCAL_DRAW_PORT:-7860}:7860"
+    volumes:
+      - hf_cache:/root/.cache/huggingface
+      - ./img-generated:/generated
+    networks:
+      - syncroom-network
+    restart: unless-stopped
+
+volumes:
+  ollama_data:
+    driver: local
+  hf_cache:
+    driver: local

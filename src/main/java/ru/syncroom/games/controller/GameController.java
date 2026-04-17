@@ -12,12 +12,15 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
+import ru.syncroom.games.dto.AddBotRequest;
+import ru.syncroom.games.dto.BotInfoResponse;
 import ru.syncroom.games.dto.CreateGameRequest;
 import ru.syncroom.games.dto.GameResponse;
 import ru.syncroom.games.service.GameService;
 import ru.syncroom.users.domain.User;
 
 import java.util.UUID;
+import java.util.List;
 
 /**
  * REST API мини-игр в комнате.
@@ -146,5 +149,61 @@ public class GameController {
     @SecurityRequirement(name = "Bearer Authentication")
     public void start(@PathVariable UUID gameId) {
         gameService.startGame(gameId);
+    }
+
+    @Operation(
+            summary = "Добавить бота в лобби",
+            description = "Добавляет одного или несколько активных ботов выбранного типа в лобби игры GARTIC_PHONE."
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Боты добавлены",
+                    content = @Content(schema = @Schema(implementation = GameResponse.class))),
+            @ApiResponse(responseCode = "400", description = "Некорректный запрос или игра не в LOBBY"),
+            @ApiResponse(responseCode = "401", description = "Не авторизован"),
+            @ApiResponse(responseCode = "404", description = "Игра или бот не найдены")
+    })
+    @PostMapping("/api/games/{gameId}/bots/add")
+    @SecurityRequirement(name = "Bearer Authentication")
+    public GameResponse addBot(
+            @PathVariable UUID gameId,
+            @AuthenticationPrincipal User currentUser,
+            @Valid @RequestBody AddBotRequest request
+    ) {
+        return gameService.addBots(gameId, currentUser.getId(), request.getBotType(), request.getCount());
+    }
+
+    @Operation(
+            summary = "Убрать бота из лобби",
+            description = "Удаляет конкретного бота из лобби игры."
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Бот удалён",
+                    content = @Content(schema = @Schema(implementation = GameResponse.class))),
+            @ApiResponse(responseCode = "400", description = "Игра не в LOBBY"),
+            @ApiResponse(responseCode = "401", description = "Не авторизован"),
+            @ApiResponse(responseCode = "404", description = "Игра или бот не найдены")
+    })
+    @DeleteMapping("/api/games/{gameId}/bots/{botId}")
+    @SecurityRequirement(name = "Bearer Authentication")
+    public GameResponse removeBot(
+            @PathVariable UUID gameId,
+            @PathVariable UUID botId,
+            @AuthenticationPrincipal User currentUser
+    ) {
+        return gameService.removeBot(gameId, currentUser.getId(), botId);
+    }
+
+    @Operation(
+            summary = "Список доступных ботов",
+            description = "Возвращает активных ботов, доступных для добавления в лобби."
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Список получен"),
+            @ApiResponse(responseCode = "401", description = "Не авторизован")
+    })
+    @GetMapping("/api/bots/available")
+    @SecurityRequirement(name = "Bearer Authentication")
+    public List<BotInfoResponse> availableBots() {
+        return gameService.getAvailableBots();
     }
 }

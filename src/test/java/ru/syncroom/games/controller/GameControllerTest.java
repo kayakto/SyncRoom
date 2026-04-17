@@ -27,6 +27,7 @@ import java.util.UUID;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.hasItem;
@@ -147,6 +148,60 @@ class GameControllerTest {
         mockMvc.perform(post("/api/games/{gameId}/start", UUID.fromString(gameId))
                         .header("Authorization", "Bearer " + t1))
                 .andExpect(status().isOk());
+    }
+
+    @Test
+    @DisplayName("Боты для GARTIC: available + add + remove")
+    void botsAvailableAddAndRemove() throws Exception {
+        String createResp = mockMvc.perform(post("/api/rooms/{roomId}/games", room.getId())
+                        .header("Authorization", "Bearer " + t1)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"gameType\":\"GARTIC_PHONE\"}"))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        String gameId = extractGameId(createResp);
+        UUID gid = UUID.fromString(gameId);
+
+        mockMvc.perform(get("/api/bots/available")
+                        .header("Authorization", "Bearer " + t1))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/games/{gameId}/bots/add", gid)
+                        .header("Authorization", "Bearer " + t1)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"botType\":\"GARTIC_DRAWER\",\"count\":1}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.players[*].isBot", hasItem(true)));
+
+        String botsPayload = mockMvc.perform(get("/api/bots/available")
+                        .header("Authorization", "Bearer " + t1))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        String botId = botsPayload.replaceAll("(?s).*\"id\"\\s*:\\s*\"([^\"]+)\".*", "$1");
+
+        mockMvc.perform(delete("/api/games/{gameId}/bots/{botId}", gid, UUID.fromString(botId))
+                        .header("Authorization", "Bearer " + t1))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    @DisplayName("Боты для GARTIC: add count=2 добавляет двух ботов")
+    void botsAddCountTwoHonored() throws Exception {
+        String createResp = mockMvc.perform(post("/api/rooms/{roomId}/games", room.getId())
+                        .header("Authorization", "Bearer " + t1)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"gameType\":\"GARTIC_PHONE\"}"))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        UUID gid = UUID.fromString(extractGameId(createResp));
+
+        mockMvc.perform(post("/api/games/{gameId}/bots/add", gid)
+                        .header("Authorization", "Bearer " + t1)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"botType\":\"GARTIC_DRAWER\",\"count\":2}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.players", hasSize(3)))
+                .andExpect(jsonPath("$.players[?(@.isBot == true)]", hasSize(2)));
     }
 
     @Test

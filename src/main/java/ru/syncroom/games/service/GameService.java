@@ -7,9 +7,11 @@ import ru.syncroom.common.exception.BadRequestException;
 import ru.syncroom.common.exception.NotFoundException;
 import ru.syncroom.games.domain.*;
 import ru.syncroom.games.dto.GameActionMessage;
+import ru.syncroom.games.dto.BotInfoResponse;
 import ru.syncroom.games.dto.GamePlayerDto;
 import ru.syncroom.games.dto.GameResponse;
 import ru.syncroom.games.repository.*;
+import ru.syncroom.games.service.bot.GarticInferenceGateway;
 import ru.syncroom.games.websocket.GameEventSender;
 import ru.syncroom.games.websocket.GameTimerService;
 import ru.syncroom.rooms.repository.RoomParticipantRepository;
@@ -18,6 +20,7 @@ import ru.syncroom.users.domain.User;
 import ru.syncroom.users.repository.UserRepository;
 
 import java.util.*;
+import java.util.concurrent.ThreadLocalRandom;
 
 @Service
 @RequiredArgsConstructor
@@ -25,6 +28,7 @@ public class GameService {
 
     private final GameSessionRepository gameSessionRepository;
     private final GamePlayerRepository gamePlayerRepository;
+    private final BotUserRepository botUserRepository;
     private final QuiplashPromptRepository promptRepository;
     private final QuiplashAnswerRepository answerRepository;
     private final QuiplashVoteRepository voteRepository;
@@ -36,6 +40,7 @@ public class GameService {
     private final UserRepository userRepository;
     private final GameEventSender eventSender;
     private final GameTimerService gameTimerService;
+    private final GarticInferenceGateway garticInferenceGateway;
     private static final int MIN_READY_PLAYERS_TO_START = 3;
     private static final int LOBBY_DISCONNECT_UNREADY_DELAY_SEC = 10;
     private static final int TOTAL_ROUNDS = 3;
@@ -45,6 +50,13 @@ public class GameService {
     private static final String DEFAULT_TEXT = "...";
     private static final String WHITE_PNG_BASE64 = "data:image/png;base64,"
             + "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMBAAZ9l1cAAAAASUVORK5CYII=";
+    private static final List<String> BOT_PHRASES = List.of(
+            "кот в космосе",
+            "пицца на велосипеде",
+            "медведь играет в шахматы",
+            "робот пьет чай у самовара",
+            "динозавр в метро"
+    );
 
     @Transactional
     public GameResponse createGame(UUID roomId, UUID creatorId, String gameType) {
@@ -78,6 +90,85 @@ public class GameService {
         GameSession session = gameSessionRepository.findFirstByRoomIdAndStatusNotOrderByCreatedAtDesc(roomId, "FINISHED")
                 .orElseThrow(() -> new NotFoundException("No active game"));
         return toResponse(session);
+    }
+
+    @Transactional(readOnly = true)
+    public List<BotInfoResponse> getAvailableBots() {
+        return botUserRepository.findByIsActiveTrueOrderByNameAsc().stream()
+                .map(bot -> BotInfoResponse.builder()
+                        .id(bot.getId().toString())
+                        .name(bot.getName())
+                        .avatarUrl(bot.getAvatarUrl())
+                        .botType(bot.getBotType())
+                        .build())
+                .toList();
+    }
+
+    @Transactional
+    public GameResponse addBots(UUID gameId, UUID requesterId, String botType, int count) {
+        GameSession game = gameSessionRepository.findById(gameId).orElseThrow(() -> new NotFoundException("Game not found"));
+        if (!"LOBBY".equals(game.getStatus())) {
+            throw new BadRequestException("Bots can be added only in LOBBY");
+        }
+        if (!"GARTIC_PHONE".equals(game.getGameType())) {
+            throw new BadRequestException("Bots are currently supported only for GARTIC_PHONE");
+        }
+        if (!roomParticipantRepository.existsByRoomIdAndUserId(game.getRoom().getId(), requesterId)) {
+            throw new BadRequestException("User is not a participant of this room");
+        }
+        List<BotUser> candidates = botUserRepository.findByBotTypeAndIsActiveTrueOrderByNameAsc(botType);
+        if (candidates.isEmpty()) {
+            BotUser generated = botUserRepository.save(BotUser.builder()
+                    .name(defaultBotName(botType))
+                    .avatarUrl("/static/bots/default.png")
+                    .botType(botType)
+                    .isActive(true)
+                    .build());
+            candidates = List.of(generated);
+        }
+        for (int i = 0; i < count; i++) {
+            BotUser template = candidates.get(i % candidates.size());
+            BotUser selected = template;
+            if (gamePlayerRepository.existsByGameIdAndBotUserId(gameId, selected.getId())) {
+                // Ensure requested count is respected even when template bot is already in lobby.
+                selected = botUserRepository.save(BotUser.builder()
+                        .name(template.getName())
+                        .avatarUrl(template.getAvatarUrl())
+                        .botType(template.getBotType())
+                        .isActive(true)
+                        .config(template.getConfig())
+                        .build());
+            }
+            GamePlayer botPlayer = gamePlayerRepository.save(GamePlayer.builder()
+                    .game(game)
+                    .botUser(selected)
+                    .isReady(true)
+                    .score(0)
+                    .build());
+            eventSender.sendToGame(gameId, "BOT_ADDED", Map.of(
+                    "botId", selected.getId().toString(),
+                    "name", selected.getName(),
+                    "avatarUrl", selected.getAvatarUrl()
+            ));
+            eventSender.sendToGame(gameId, "PLAYER_READY", Map.of("userId", participantId(botPlayer).toString()));
+        }
+        return toResponse(game);
+    }
+
+    @Transactional
+    public GameResponse removeBot(UUID gameId, UUID requesterId, UUID botId) {
+        GameSession game = gameSessionRepository.findById(gameId).orElseThrow(() -> new NotFoundException("Game not found"));
+        if (!"LOBBY".equals(game.getStatus())) {
+            throw new BadRequestException("Bots can be removed only in LOBBY");
+        }
+        if (!roomParticipantRepository.existsByRoomIdAndUserId(game.getRoom().getId(), requesterId)) {
+            throw new BadRequestException("User is not a participant of this room");
+        }
+        GamePlayer botPlayer = gamePlayerRepository.findByGameIdAndBotUserId(gameId, botId)
+                .orElseThrow(() -> new NotFoundException("Bot is not in lobby"));
+        gamePlayerRepository.delete(botPlayer);
+        eventSender.sendToGame(gameId, "BOT_REMOVED", Map.of("botId", botId.toString()));
+        return toResponse(game);
     }
 
     @Transactional
@@ -189,12 +280,16 @@ public class GameService {
                 .filter(p -> !Boolean.TRUE.equals(p.getIsReady()))
                 .toList();
         for (GamePlayer unready : unreadyPlayers) {
-            cancelDisconnectUnreadyTimer(gameId, unready.getUser().getId());
+            if (isHuman(unready)) {
+                cancelDisconnectUnreadyTimer(gameId, unready.getUser().getId());
+            }
             gamePlayerRepository.delete(unready);
-            eventSender.sendToPlayer(gameId, unready.getUser().getId(), "PLAYER_KICKED", Map.of(
-                    "userId", unready.getUser().getId().toString(),
-                    "reason", "Игра началась без вас — вы не были готовы"
-            ));
+            if (isHuman(unready)) {
+                eventSender.sendToPlayer(gameId, unready.getUser().getId(), "PLAYER_KICKED", Map.of(
+                        "userId", unready.getUser().getId().toString(),
+                        "reason", "Игра началась без вас — вы не были готовы"
+                ));
+            }
         }
 
         game.setStatus("IN_PROGRESS");
@@ -202,9 +297,10 @@ public class GameService {
 
         List<Map<String, Object>> playersPayload = readyPlayers.stream().map(p -> {
             Map<String, Object> m = new HashMap<>();
-            m.put("id", p.getUser().getId().toString());
-            m.put("name", p.getUser().getName());
-            m.put("avatarUrl", p.getUser().getAvatarUrl());
+            m.put("id", participantId(p).toString());
+            m.put("name", participantName(p));
+            m.put("avatarUrl", participantAvatar(p));
+            m.put("isBot", isBot(p));
             return m;
         }).toList();
         eventSender.sendToGame(gameId, "GAME_STARTED", Map.of("players", playersPayload));
@@ -241,16 +337,24 @@ public class GameService {
             return;
         }
         if ("SUBMIT_PHRASE".equals(type)) {
-            submitGarticStep(gameId, userId, "TEXT", String.valueOf(msg.getPayload().getOrDefault("text", DEFAULT_TEXT)));
+            submitGarticStep(gameId, resolveHumanPlayer(gameId, userId), "TEXT",
+                    String.valueOf(msg.getPayload().getOrDefault("text", DEFAULT_TEXT)));
             return;
         }
         if ("SUBMIT_GUESS".equals(type)) {
-            submitGarticStep(gameId, userId, "TEXT", String.valueOf(msg.getPayload().getOrDefault("text", DEFAULT_TEXT)));
+            submitGarticStep(gameId, resolveHumanPlayer(gameId, userId), "TEXT",
+                    String.valueOf(msg.getPayload().getOrDefault("text", DEFAULT_TEXT)));
             return;
         }
         if ("SUBMIT_DRAWING".equals(type)) {
-            submitGarticStep(gameId, userId, "DRAWING", String.valueOf(msg.getPayload().getOrDefault("imageBase64", WHITE_PNG_BASE64)));
+            submitGarticStep(gameId, resolveHumanPlayer(gameId, userId), "DRAWING",
+                    String.valueOf(msg.getPayload().getOrDefault("imageBase64", WHITE_PNG_BASE64)));
         }
+    }
+
+    private GamePlayer resolveHumanPlayer(UUID gameId, UUID userId) {
+        return gamePlayerRepository.findByGameIdAndUserId(gameId, userId)
+                .orElseThrow(() -> new NotFoundException("Player not found"));
     }
 
     private void submitAnswer(UUID gameId, UUID userId, String text) {
@@ -375,13 +479,13 @@ public class GameService {
         List<Map<String, Object>> results = answers.stream().map(a -> Map.<String, Object>of(
                 "answerId", a.getId().toString(),
                 "text", a.getText(),
-                "authorId", a.getPlayer().getUser().getId().toString(),
-                "authorName", a.getPlayer().getUser().getName(),
+                "authorId", participantId(a.getPlayer()).toString(),
+                "authorName", participantName(a.getPlayer()),
                 "votes", a.getVotes()
         )).toList();
         List<Map<String, Object>> scores = gamePlayerRepository.findByGameId(gameId).stream().map(p -> Map.<String, Object>of(
-                "playerId", p.getUser().getId().toString(),
-                "playerName", p.getUser().getName(),
+                "playerId", participantId(p).toString(),
+                "playerName", participantName(p),
                 "score", p.getScore()
         )).toList();
         eventSender.sendToGame(gameId, "ROUND_RESULT", Map.of("round", round, "results", results, "scores", scores));
@@ -414,7 +518,7 @@ public class GameService {
         scheduleGarticTimeout(game.getId(), 1);
     }
 
-    private void submitGarticStep(UUID gameId, UUID userId, String submittedType, String submittedContent) {
+    private void submitGarticStep(UUID gameId, GamePlayer actor, String submittedType, String submittedContent) {
         GameSession game = gameSessionRepository.findById(gameId).orElseThrow(() -> new NotFoundException("Game not found"));
         if (!"GARTIC_PHONE".equals(game.getGameType())) {
             throw new BadRequestException("This action is only available for GARTIC_PHONE");
@@ -429,18 +533,18 @@ public class GameService {
         if (!expectedType.equals(submittedType)) {
             throw new BadRequestException("Unexpected action for current step");
         }
-        GamePlayer player = gamePlayerRepository.findByGameIdAndUserId(gameId, userId)
-                .orElseThrow(() -> new NotFoundException("Player not found"));
-        int playerIndex = indexOfPlayer(orderedPlayers, player.getId());
+        int playerIndex = indexOfPlayer(orderedPlayers, actor.getId());
         GarticChain assignedChain = resolveChainForPlayerStep(gameId, orderedPlayers, playerIndex, currentStep);
         if (garticStepRepository.findByChainIdAndStepNumber(assignedChain.getId(), currentStep).isPresent()) {
-            eventSender.sendToPlayer(gameId, userId, "WAITING_FOR_OTHERS", Map.of("stepNumber", currentStep));
+            if (isHuman(actor)) {
+                eventSender.sendToPlayer(gameId, actor.getUser().getId(), "WAITING_FOR_OTHERS", Map.of("stepNumber", currentStep));
+            }
             return;
         }
         String normalizedContent = normalizeGarticContent(expectedType, submittedContent);
         garticStepRepository.save(GarticStep.builder()
                 .chain(assignedChain)
-                .player(player)
+                .player(actor)
                 .stepNumber(currentStep)
                 .stepType(expectedType)
                 .content(normalizedContent)
@@ -497,17 +601,29 @@ public class GameService {
                         .map(GarticStep::getContent).orElse(DEFAULT_TEXT);
                 payload.put("phrase", phrase);
                 payload.put("timeLimit", GARTIC_DRAW_TIMEOUT_SEC);
-                eventSender.sendToPlayer(gameId, player.getUser().getId(), "STEP_DRAW", payload);
+                if (isHuman(player)) {
+                    eventSender.sendToPlayer(gameId, player.getUser().getId(), "STEP_DRAW", payload);
+                } else {
+                    scheduleBotStep(gameId, player, stepNumber, "DRAWING", botDraw(phrase));
+                }
             } else if (stepNumber == 1) {
                 payload.put("stepNumber", 1);
                 payload.put("timeLimit", GARTIC_TEXT_TIMEOUT_SEC);
-                eventSender.sendToPlayer(gameId, player.getUser().getId(), "STEP_WRITE", payload);
+                if (isHuman(player)) {
+                    eventSender.sendToPlayer(gameId, player.getUser().getId(), "STEP_WRITE", payload);
+                } else {
+                    scheduleBotStep(gameId, player, stepNumber, "TEXT", botPhrase());
+                }
             } else {
                 String imageBase64 = garticStepRepository.findByChainIdAndStepNumber(chain.getId(), stepNumber - 1)
                         .map(GarticStep::getContent).orElse(WHITE_PNG_BASE64);
                 payload.put("imageBase64", imageBase64);
                 payload.put("timeLimit", GARTIC_TEXT_TIMEOUT_SEC);
-                eventSender.sendToPlayer(gameId, player.getUser().getId(), "STEP_GUESS", payload);
+                if (isHuman(player)) {
+                    eventSender.sendToPlayer(gameId, player.getUser().getId(), "STEP_GUESS", payload);
+                } else {
+                    scheduleBotStep(gameId, player, stepNumber, "TEXT", botGuess(imageBase64));
+                }
             }
         }
     }
@@ -516,13 +632,13 @@ public class GameService {
         List<GarticChain> chains = garticChainRepository.findByGameId(gameId);
         List<Map<String, Object>> chainsPayload = chains.stream().map(chain -> {
             Map<String, Object> chainMap = new HashMap<>();
-            chainMap.put("ownerId", chain.getOwner().getUser().getId().toString());
-            chainMap.put("ownerName", chain.getOwner().getUser().getName());
+            chainMap.put("ownerId", participantId(chain.getOwner()).toString());
+            chainMap.put("ownerName", participantName(chain.getOwner()));
             List<Map<String, Object>> steps = garticStepRepository.findByChainIdOrderByStepNumberAsc(chain.getId()).stream()
                     .map(step -> {
                         Map<String, Object> stepMap = new HashMap<>();
-                        stepMap.put("playerId", step.getPlayer().getUser().getId().toString());
-                        stepMap.put("playerName", step.getPlayer().getUser().getName());
+                        stepMap.put("playerId", participantId(step.getPlayer()).toString());
+                        stepMap.put("playerName", participantName(step.getPlayer()));
                         stepMap.put("type", step.getStepType());
                         stepMap.put("content", step.getContent());
                         return stepMap;
@@ -547,7 +663,7 @@ public class GameService {
 
     private List<GamePlayer> orderedPlayers(List<GamePlayer> players) {
         return players.stream()
-                .sorted(Comparator.comparing(p -> p.getUser().getId().toString()))
+                .sorted(Comparator.comparing(p -> participantId(p).toString()))
                 .toList();
     }
 
@@ -619,6 +735,62 @@ public class GameService {
         });
     }
 
+    private boolean isBot(GamePlayer player) {
+        return player.getBotUser() != null;
+    }
+
+    private boolean isHuman(GamePlayer player) {
+        return player.getUser() != null;
+    }
+
+    private UUID participantId(GamePlayer player) {
+        return isHuman(player) ? player.getUser().getId() : player.getBotUser().getId();
+    }
+
+    private String participantName(GamePlayer player) {
+        return isHuman(player) ? player.getUser().getName() : player.getBotUser().getName();
+    }
+
+    private String participantAvatar(GamePlayer player) {
+        return isHuman(player) ? player.getUser().getAvatarUrl() : player.getBotUser().getAvatarUrl();
+    }
+
+    private void scheduleBotStep(UUID gameId, GamePlayer botPlayer, int stepNumber, String type, String content) {
+        int delaySec = ThreadLocalRandom.current().nextInt(1, 4);
+        String key = "game:" + gameId + ":bot:" + botPlayer.getId() + ":step:" + stepNumber;
+        gameTimerService.schedule(key, delaySec, () -> {
+            try {
+                submitGarticStep(gameId, botPlayer, type, content);
+            } catch (Exception ignored) {
+                // Bot actions are best-effort and should not break scheduler thread.
+            }
+        });
+    }
+
+    private String botPhrase() {
+        return BOT_PHRASES.get(ThreadLocalRandom.current().nextInt(BOT_PHRASES.size()));
+    }
+
+    private String botGuess(String imageBase64) {
+        if (imageBase64 == null || imageBase64.isBlank() || WHITE_PNG_BASE64.equals(imageBase64)) {
+            return "ничего не видно";
+        }
+        return garticInferenceGateway.guess(imageBase64).orElse("похоже на рисунок кота");
+    }
+
+    private String botDraw(String phrase) {
+        return garticInferenceGateway.draw(phrase).orElse(WHITE_PNG_BASE64);
+    }
+
+    private String defaultBotName(String botType) {
+        return switch (botType) {
+            case "GARTIC_DRAWER" -> "DrawBot";
+            case "GARTIC_WRITER" -> "WordSmith";
+            case "GARTIC_GUESSER" -> "SketchGuess";
+            default -> "Bot-" + botType;
+        };
+    }
+
     private String normalizeGarticContent(String type, String content) {
         String normalized = content == null || content.isBlank() ? ("DRAWING".equals(type) ? WHITE_PNG_BASE64 : DEFAULT_TEXT) : content;
         if (!"DRAWING".equals(type)) {
@@ -634,9 +806,10 @@ public class GameService {
 
     private GameResponse toResponse(GameSession session) {
         List<GamePlayerDto> players = gamePlayerRepository.findByGameId(session.getId()).stream().map(p -> GamePlayerDto.builder()
-                .id(p.getUser().getId().toString())
-                .name(p.getUser().getName())
-                .avatarUrl(p.getUser().getAvatarUrl())
+                .id(participantId(p).toString())
+                .name(participantName(p))
+                .avatarUrl(participantAvatar(p))
+                .isBot(isBot(p))
                 .isReady(p.getIsReady())
                 .score(p.getScore())
                 .build()).toList();

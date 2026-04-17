@@ -1117,6 +1117,91 @@ data class GameEventEnvelope(
 )
 ```
 
+### 10.6. Боты в Gartic (Android integration)
+
+REST для лобби ботов:
+
+```text
+GET    /api/bots/available
+POST   /api/games/{gameId}/bots/add
+DELETE /api/games/{gameId}/bots/{botId}
+```
+
+`POST /api/games/{gameId}/bots/add` body:
+
+```json
+{ "botType": "GARTIC_DRAWER", "count": 1 }
+```
+
+Ответом приходит обычный `GameResponse`, где у ботов:
+- `players[].isBot = true`
+- `players[].id` — id bot_user (не userId человека)
+
+Kotlin-модели:
+
+```kotlin
+@Serializable
+data class AddBotRequest(
+    val botType: String,
+    val count: Int = 1
+)
+
+@Serializable
+data class BotInfoResponse(
+    val id: String,
+    val name: String,
+    val avatarUrl: String? = null,
+    val botType: String
+)
+```
+
+Retrofit-добавка:
+
+```kotlin
+interface SyncRoomApi {
+    // ...
+    @GET("/api/bots/available")
+    suspend fun getAvailableBots(
+        @Header("Authorization") token: String
+    ): List<BotInfoResponse>
+
+    @POST("/api/games/{gameId}/bots/add")
+    suspend fun addBots(
+        @Path("gameId") gameId: String,
+        @Header("Authorization") token: String,
+        @Body body: AddBotRequest
+    ): GameResponse
+
+    @DELETE("/api/games/{gameId}/bots/{botId}")
+    suspend fun removeBot(
+        @Path("gameId") gameId: String,
+        @Path("botId") botId: String,
+        @Header("Authorization") token: String
+    ): GameResponse
+}
+```
+
+WS-события для UI лобби:
+- `BOT_ADDED` `{ botId, name, avatarUrl }`
+- `BOT_REMOVED` `{ botId }`
+
+Во время игры изображения и подписи приходят как раньше в `STEP_*`/`REVEAL_CHAIN`:
+- `STEP_GUESS.payload.imageBase64`
+- `REVEAL_CHAIN.payload.chains[].steps[].content` (для `type = DRAWING`)
+
+### 10.7. Как Android-команде проверить всё локально (через Docker)
+
+Одна команда для backend + local AI:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.local-ai.yml up -d --build
+```
+
+После этого:
+- backend: `http://localhost:8080`
+- swagger: `http://localhost:8080/swagger-ui.html`
+- картинки, которые рисуют боты, дополнительно сохраняются в `img-generated/` (в корне проекта backend).
+
 ---
 
 ## 11. Чат комнаты

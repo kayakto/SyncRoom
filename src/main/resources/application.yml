@@ -35,3 +35,13 @@ springdoc:
 # SRS media server — used for STREAM mode projector sessions
 srs:
   host: ${SRS_HOST:localhost}
+
+bots:
+  inference:
+    enabled: ${BOTS_INFERENCE_ENABLED:false}
+    # Local or free Russian inference adapter endpoints.
+    # Example:
+    # draw-url: http://127.0.0.1:8091/api/draw
+    # guess-url: http://127.0.0.1:8092/api/guess
+    draw-url: ${BOTS_INFERENCE_DRAW_URL:}
+    guess-url: ${BOTS_INFERENCE_GUESS_URL:}

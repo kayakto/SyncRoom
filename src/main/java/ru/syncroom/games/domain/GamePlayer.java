@@ -2,6 +2,7 @@ package ru.syncroom.games.domain;
 
 import jakarta.persistence.*;
 import lombok.*;
+import ru.syncroom.games.domain.BotUser;
 import ru.syncroom.users.domain.User;
 
 import java.util.UUID;
@@ -22,8 +23,12 @@ public class GamePlayer {
     private GameSession game;
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "user_id", nullable = false)
+    @JoinColumn(name = "user_id")
     private User user;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "bot_user_id")
+    private BotUser botUser;
 
     @Column(name = "is_ready", nullable = false)
     private Boolean isReady;

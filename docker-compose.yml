@@ -30,6 +30,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      inference-mock:
+        condition: service_started
     environment:
       SPRING_PROFILES_ACTIVE: docker
       POSTGRES_HOST: postgres
@@ -40,8 +42,29 @@ services:
       JWT_SECRET: ${JWT_SECRET:-your-256-bit-secret-key-change-in-production-minimum-32-characters}
       JWT_ACCESS_EXPIRATION: ${JWT_ACCESS_EXPIRATION:-900000}
       JWT_REFRESH_EXPIRATION: ${JWT_REFRESH_EXPIRATION:-2592000000}
+      BOTS_INFERENCE_ENABLED: ${BOTS_INFERENCE_ENABLED:-true}
+      BOTS_INFERENCE_DRAW_URL: ${BOTS_INFERENCE_DRAW_URL:-http://inference-mock:8091/api/draw}
+      BOTS_INFERENCE_GUESS_URL: ${BOTS_INFERENCE_GUESS_URL:-http://inference-mock:8091/api/guess}
     ports:
       - "${APP_PORT:-8080}:8080"
+    networks:
+      - syncroom-network
+    restart: unless-stopped
+
+  # Local inference for game bots (DRAW/GUESS)
+  inference-mock:
+    build:
+      context: ./inference-mock
+      dockerfile: Dockerfile
+    container_name: syncroom-inference-mock
+    environment:
+      INFERENCE_PROVIDER: ${INFERENCE_PROVIDER:-local}
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-llava:7b}
+      LOCAL_DRAW_URL: ${LOCAL_DRAW_URL:-http://host.docker.internal:7860/sdapi/v1/txt2img}
+      LOCAL_GUESS_URL: ${LOCAL_GUESS_URL:-}
+    ports:
+      - "${INFERENCE_PORT:-8091}:8091"
     networks:
       - syncroom-network
     restart: unless-stopped

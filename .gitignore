@@ -6,6 +6,9 @@ build/
 FEATURES_BACKEND_SPEC.md
 BACKEND_TZ.md
 TZ.md
+img-generated/*.png
+inference-mock/__pycache__
+local-draw-service/__pycache__
 
 ### IntelliJ IDEA ###
 .idea/modules.xml
