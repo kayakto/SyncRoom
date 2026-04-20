@@ -31,6 +31,7 @@ import ru.syncroom.users.domain.User;
 import ru.syncroom.users.repository.UserRepository;
 
 import java.time.OffsetDateTime;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.ArrayList;
 import java.util.List;
@@ -49,6 +50,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 @Transactional
 @DisplayName("GameService WebSocket Flow Tests")
 class GameServiceWebSocketTest {
+
+    /** Valid 1×1 PNG (must pass server-side PNG magic check). */
+    private static final String MINI_PNG_DATA_URL =
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMBAAZ9l1cAAAAASUVORK5CYII=";
 
     @Autowired
     private GameService gameService;
@@ -174,9 +179,9 @@ class GameServiceWebSocketTest {
         submitPhrase(gameId, u2.getId(), "p2");
         submitPhrase(gameId, u3.getId(), "p3");
         // step 2 (DRAWING)
-        submitDrawing(gameId, u1.getId(), "data:image/png;base64,AA==");
-        submitDrawing(gameId, u2.getId(), "data:image/png;base64,AA==");
-        submitDrawing(gameId, u3.getId(), "data:image/png;base64,AA==");
+        submitDrawing(gameId, u1.getId(), MINI_PNG_DATA_URL);
+        submitDrawing(gameId, u2.getId(), MINI_PNG_DATA_URL);
+        submitDrawing(gameId, u3.getId(), MINI_PNG_DATA_URL);
         // step 3 (TEXT guess)
         submitGuess(gameId, u1.getId(), "g1");
         submitGuess(gameId, u2.getId(), "g2");
@@ -200,8 +205,12 @@ class GameServiceWebSocketTest {
         submitPhrase(gameId, u2.getId(), "p2");
         submitPhrase(gameId, u3.getId(), "p3");
 
-        String hugeBase64 = "data:image/png;base64," + "A".repeat(2_900_000);
-        assertThrows(BadRequestException.class, () -> submitDrawing(gameId, u1.getId(), hugeBase64));
+        int maxBytes = 2 * 1024 * 1024;
+        byte[] huge = new byte[maxBytes + 1];
+        byte[] pngMagic = new byte[]{(byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+        System.arraycopy(pngMagic, 0, huge, 0, pngMagic.length);
+        String hugeDataUrl = "data:image/png;base64," + Base64.getEncoder().encodeToString(huge);
+        assertThrows(BadRequestException.class, () -> submitDrawing(gameId, u1.getId(), hugeDataUrl));
     }
 
     @Test
@@ -237,9 +246,9 @@ class GameServiceWebSocketTest {
         submitPhrase(gameId, u2.getId(), "p2");
         submitPhrase(gameId, u3.getId(), "p3");
 
-        submitDrawing(gameId, u1.getId(), "data:image/png;base64,AA==");
-        submitDrawing(gameId, u2.getId(), "data:image/png;base64,AA==");
-        submitDrawing(gameId, u3.getId(), "data:image/png;base64,AA==");
+        submitDrawing(gameId, u1.getId(), MINI_PNG_DATA_URL);
+        submitDrawing(gameId, u2.getId(), MINI_PNG_DATA_URL);
+        submitDrawing(gameId, u3.getId(), MINI_PNG_DATA_URL);
 
         ArgumentCaptor<UUID> gameIdCaptor = ArgumentCaptor.forClass(UUID.class);
         ArgumentCaptor<UUID> userIdCaptor = ArgumentCaptor.forClass(UUID.class);
@@ -263,7 +272,12 @@ class GameServiceWebSocketTest {
             String t = types.get(i);
             if ("STEP_WRITE".equals(t)) hasWriteForU1 = true;
             if ("STEP_DRAW".equals(t)) hasDrawForU1 = true;
-            if ("STEP_GUESS".equals(t)) hasGuessForU1 = true;
+            if ("STEP_GUESS".equals(t)) {
+                hasGuessForU1 = true;
+                Map<String, Object> p = payloadCaptor.getAllValues().get(i);
+                assertTrue(p.containsKey("imageUrl") || p.containsKey("imageBase64"),
+                        "STEP_GUESS should expose imageUrl or legacy imageBase64");
+            }
         }
 
         assertTrue(hasWriteForU1, "u1 should receive STEP_WRITE");
@@ -288,13 +302,94 @@ class GameServiceWebSocketTest {
         submitPhrase(gameId, u1.getId(), "human phrase");
 
         runBotTasks(gameId, 2);
-        submitDrawing(gameId, u1.getId(), "data:image/png;base64,AA==");
+        submitDrawing(gameId, u1.getId(), MINI_PNG_DATA_URL);
 
         runBotTasks(gameId, 3);
         submitGuess(gameId, u1.getId(), "human guess");
 
         verify(gameEventSender, atLeastOnce()).sendToGame(eq(gameId), eq("BOT_ADDED"), anyMap());
         verify(gameEventSender, atLeastOnce()).sendToGame(eq(gameId), eq("REVEAL_CHAIN"), anyMap());
+        verify(gameEventSender, atLeastOnce()).sendToGame(eq(gameId), eq("GAME_FINISHED"), anyMap());
+    }
+
+    @Test
+    @DisplayName("На SUBMIT_* сервер отправляет персональный ACTION_ACCEPTED")
+    void submitActionsSendActionAcceptedAck() {
+        GameResponse game = gameService.createGame(room.getId(), u1.getId(), "GARTIC_PHONE");
+        UUID gameId = UUID.fromString(game.getGameId());
+        gameService.markReady(gameId, u1.getId());
+        gameService.markReady(gameId, u2.getId());
+        gameService.markReady(gameId, u3.getId());
+        gameService.startGame(gameId);
+
+        submitPhrase(gameId, u1.getId(), "cat phone");
+
+        verify(gameEventSender, atLeastOnce()).sendToPlayer(
+                eq(gameId),
+                eq(u1.getId()),
+                eq("ACTION_ACCEPTED"),
+                argThat(m -> m instanceof Map<?, ?> map
+                        && "SUBMIT_PHRASE".equals(String.valueOf(map.get("actionType"))))
+        );
+    }
+
+    @Test
+    @DisplayName("Quiplash с ботами: боты отвечают и голосуют, игра завершается")
+    void quiplashBotsAnswerAndVoteAndFinishGame() {
+        GameResponse game = gameService.createGame(room.getId(), u1.getId(), "QUIPLASH");
+        UUID gameId = UUID.fromString(game.getGameId());
+
+        gameService.addBots(gameId, u1.getId(), "QUIPLASH_JOKER", 2);
+        gameService.markReady(gameId, u1.getId());
+        gameService.startGame(gameId);
+
+        runQuiplashBotTasks(gameId, "answer", 1);
+        QuiplashPrompt round1 = promptRepository.findFirstByGameIdOrderByRoundDesc(gameId).orElseThrow();
+        QuiplashAnswer humanR1 = answerRepository.findByPromptId(round1.getId()).stream()
+                .filter(a -> a.getPlayer().getUser() != null && a.getPlayer().getUser().getId().equals(u1.getId()))
+                .findFirst()
+                .orElseGet(() -> {
+                    submitAnswer(gameId, u1.getId(), "human-r1");
+                    return answerRepository.findByPromptId(round1.getId()).stream()
+                            .filter(a -> a.getPlayer().getUser() != null && a.getPlayer().getUser().getId().equals(u1.getId()))
+                            .findFirst().orElseThrow();
+                });
+
+        runQuiplashBotTasks(gameId, "vote", 1);
+        submitVote(gameId, u1.getId(), pickNotOwnAnswer(round1, u1.getId(), humanR1.getId()));
+
+        runQuiplashBotTasks(gameId, "answer", 2);
+        QuiplashPrompt round2 = promptRepository.findFirstByGameIdOrderByRoundDesc(gameId).orElseThrow();
+        QuiplashAnswer humanR2 = answerRepository.findByPromptId(round2.getId()).stream()
+                .filter(a -> a.getPlayer().getUser() != null && a.getPlayer().getUser().getId().equals(u1.getId()))
+                .findFirst()
+                .orElseGet(() -> {
+                    submitAnswer(gameId, u1.getId(), "human-r2");
+                    return answerRepository.findByPromptId(round2.getId()).stream()
+                            .filter(a -> a.getPlayer().getUser() != null && a.getPlayer().getUser().getId().equals(u1.getId()))
+                            .findFirst().orElseThrow();
+                });
+
+        runQuiplashBotTasks(gameId, "vote", 2);
+        submitVote(gameId, u1.getId(), pickNotOwnAnswer(round2, u1.getId(), humanR2.getId()));
+
+        runQuiplashBotTasks(gameId, "answer", 3);
+        QuiplashPrompt round3 = promptRepository.findFirstByGameIdOrderByRoundDesc(gameId).orElseThrow();
+        QuiplashAnswer humanR3 = answerRepository.findByPromptId(round3.getId()).stream()
+                .filter(a -> a.getPlayer().getUser() != null && a.getPlayer().getUser().getId().equals(u1.getId()))
+                .findFirst()
+                .orElseGet(() -> {
+                    submitAnswer(gameId, u1.getId(), "human-r3");
+                    return answerRepository.findByPromptId(round3.getId()).stream()
+                            .filter(a -> a.getPlayer().getUser() != null && a.getPlayer().getUser().getId().equals(u1.getId()))
+                            .findFirst().orElseThrow();
+                });
+
+        runQuiplashBotTasks(gameId, "vote", 3);
+        submitVote(gameId, u1.getId(), pickNotOwnAnswer(round3, u1.getId(), humanR3.getId()));
+
+        verify(gameEventSender, atLeastOnce()).sendToGame(eq(gameId), eq("WAITING_FOR_VOTES"), anyMap());
+        verify(gameEventSender, atLeastOnce()).sendToGame(eq(gameId), eq("ROUND_RESULT"), anyMap());
         verify(gameEventSender, atLeastOnce()).sendToGame(eq(gameId), eq("GAME_FINISHED"), anyMap());
     }
 
@@ -372,16 +467,37 @@ class GameServiceWebSocketTest {
     }
 
     private void runBotTasks(UUID gameId, int step) {
-        String suffix = ":step:" + step;
+        String marker = ":step:" + step + ":";
         List<String> keys = new ArrayList<>(scheduledTasks.keySet());
         for (String key : keys) {
-            if (key.startsWith("game:" + gameId + ":bot:") && key.endsWith(suffix)) {
+            if (key.startsWith("game:" + gameId + ":bot:") && key.contains(marker)) {
                 Runnable task = scheduledTasks.remove(key);
                 if (task != null) {
                     task.run();
                 }
             }
         }
+    }
+
+    private void runQuiplashBotTasks(UUID gameId, String phase, int round) {
+        String prefix = "game:" + gameId + ":bot:quiplash:" + phase + ":round:" + round + ":player:";
+        List<String> keys = new ArrayList<>(scheduledTasks.keySet());
+        for (String key : keys) {
+            if (key.startsWith(prefix)) {
+                Runnable task = scheduledTasks.remove(key);
+                if (task != null) {
+                    task.run();
+                }
+            }
+        }
+    }
+
+    private UUID pickNotOwnAnswer(QuiplashPrompt prompt, UUID userId, UUID fallback) {
+        return answerRepository.findByPromptId(prompt.getId()).stream()
+                .filter(a -> a.getPlayer().getUser() == null || !a.getPlayer().getUser().getId().equals(userId))
+                .map(QuiplashAnswer::getId)
+                .findFirst()
+                .orElse(fallback);
     }
 
     private User createUser(String email) {

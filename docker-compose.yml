@@ -45,8 +45,15 @@ services:
       BOTS_INFERENCE_ENABLED: ${BOTS_INFERENCE_ENABLED:-true}
       BOTS_INFERENCE_DRAW_URL: ${BOTS_INFERENCE_DRAW_URL:-http://inference-mock:8091/api/draw}
       BOTS_INFERENCE_GUESS_URL: ${BOTS_INFERENCE_GUESS_URL:-http://inference-mock:8091/api/guess}
+      BOTS_INFERENCE_TEXT_URL: ${BOTS_INFERENCE_TEXT_URL:-http://inference-mock:8091/api/text}
+      GAMES_TRACE_DIR: ${GAMES_TRACE_DIR:-/tmp/game-traces}
+      GAMES_TRACE_ENABLED: ${GAMES_TRACE_ENABLED:-true}
+      GARTIC_ASSETS_DIR: ${GARTIC_ASSETS_DIR:-/tmp/gartic-assets}
     ports:
       - "${APP_PORT:-8080}:8080"
+    volumes:
+      - ./game-traces:/tmp/game-traces
+      - ./gartic-assets:/tmp/gartic-assets
     networks:
       - syncroom-network
     restart: unless-stopped

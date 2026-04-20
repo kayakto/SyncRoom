@@ -9,6 +9,7 @@ import org.springframework.messaging.simp.config.MessageBrokerRegistry;
 import org.springframework.util.MimeTypeUtils;
 import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBroker;
 import org.springframework.web.socket.config.annotation.StompEndpointRegistry;
+import org.springframework.web.socket.config.annotation.WebSocketTransportRegistration;
 import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerConfigurer;
 
 import java.util.List;
@@ -21,7 +22,8 @@ import java.util.List;
  *
  * Destination prefixes:
  *   /app             — client → server (handled by @MessageMapping methods)
- *   /topic           — server → client (simple in-memory broker)
+ *   /topic           — broadcast (комната, игра)
+ *   /user/...        — личные сообщения (например STEP_WRITE для одного игрока)
  *
  * Android client usage:
  *   val client = OkHttpClient()
@@ -33,6 +35,12 @@ import java.util.List;
 @EnableWebSocketMessageBroker
 @RequiredArgsConstructor
 public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
+
+    /**
+     * Allow larger STOMP frames for base64 drawings sent by clients.
+     * 2 MB is enough for our game limit (~2 MB image payload in GameService).
+     */
+    private static final int WS_MESSAGE_LIMIT_BYTES = 2 * 1024 * 1024;
 
     private final ObjectMapper objectMapper;
 
@@ -51,10 +59,18 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     @Override
     public void configureMessageBroker(MessageBrokerRegistry registry) {
-        // Simple in-memory broker; messages published to /topic/* are pushed to all subscribers
-        registry.enableSimpleBroker("/topic");
+        // /topic — broadcast; /queue — для user-destination (см. convertAndSendToUser в GameEventSender)
+        registry.enableSimpleBroker("/topic", "/queue");
+        registry.setUserDestinationPrefix("/user/");
         // Messages sent from client to /app/* are routed to @MessageMapping methods
         registry.setApplicationDestinationPrefixes("/app");
+    }
+
+    @Override
+    public void configureWebSocketTransport(WebSocketTransportRegistration registry) {
+        registry.setMessageSizeLimit(WS_MESSAGE_LIMIT_BYTES);
+        registry.setSendBufferSizeLimit(WS_MESSAGE_LIMIT_BYTES);
+        registry.setSendTimeLimit(30_000);
     }
 
     @Override

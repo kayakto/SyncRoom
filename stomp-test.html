@@ -162,8 +162,27 @@
       <input id="garticTextValue" placeholder="Кот в космосе ест пиццу" />
     </div>
     <div>
-      <label>Gartic drawing base64 (SUBMIT_DRAWING)</label>
-      <input id="garticDrawingValue" value="data:image/png;base64,AA==" />
+      <label>Gartic: drawingAssetId (после POST multipart) — предпочтительно вместо base64</label>
+      <input id="garticDrawingAssetId" placeholder="uuid из POST /api/games/{id}/gartic/drawings" />
+    </div>
+    <div>
+      <label>Gartic legacy: data URL (если не используешь upload)</label>
+      <input id="garticDrawingValue" placeholder="data:image/png;base64,..." />
+    </div>
+  </div>
+  <div class="row" style="flex-wrap:wrap;align-items:center;margin-bottom:8px">
+    <input type="file" id="garticPngFile" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none" />
+    <button type="button" onclick="document.getElementById('garticPngFile').click()">📎 Файл: PNG → сервер (рекоменд.) / иначе → base64</button>
+    <button type="button" class="yellow" onclick="setTinyTestPng()">▫ Мини-PNG (1×1) в legacy-поле</button>
+    <span style="font-size:11px;color:#6c7086">PNG: загрузка на сервер; остальные форматы — только base64 в legacy.</span>
+  </div>
+  <div class="grid2">
+    <div>
+      <label>STEP_GUESS: imageUrl (заполняется из WS автоматически)</label>
+      <input id="garticGuessImageUrl" readonly placeholder="после STEP_GUESS" />
+    </div>
+    <div style="padding-top:18px">
+      <button type="button" onclick="downloadGarticGuessPng()">⬇ Скачать PNG шага (GET + JWT)</button>
     </div>
   </div>
   <div class="row">
@@ -173,6 +192,7 @@
     <button onclick="gameUnready()">↩️ POST /games/{id}/unready</button>
     <button onclick="gameLeave()">🚪 POST /games/{id}/leave</button>
     <button onclick="gameStart()">🚀 POST /games/{id}/start</button>
+    <button class="red" onclick="gameStop()">🛑 POST /games/{id}/stop</button>
     <button onclick="subGame()">👂 Subscribe /topic/game/{id}</button>
   </div>
   <div class="row">
@@ -218,6 +238,7 @@
     let projectorSub = null;
     let pomodoroSub = null;
     let gameSub = null;
+    let gameUserSub = null;
     let chatSub = null;
 
     /* ── helpers ─────────────────────────────────────────────────── */
@@ -357,17 +378,61 @@
       const g = gid();
       if (!g) { log('⚠️ Введи Game ID', 'err'); return; }
       if (gameSub) gameSub.unsubscribe();
+      if (gameUserSub) gameUserSub.unsubscribe();
       const dest = '/topic/game/' + g;
       gameSub = stompClient.subscribe(dest, frame => {
         const e = parseEvent(frame.body);
         log('🎲 [' + e.type + '] ' + JSON.stringify(e.payload, null, 2), 'in');
       });
       log('👂 Subscribed: ' + dest, 'out');
-      log('Создай игру, поставь ready, start и отправляй WS действия.', 'info');
+      // Личные шаги Gartic (STEP_WRITE / STEP_DRAW / STEP_GUESS) шлются только сюда, не в /topic
+      const userDest = '/user/topic/game/' + g;
+      gameUserSub = stompClient.subscribe(userDest, frame => {
+        const e = parseEvent(frame.body);
+        let shown = e.payload;
+        if (e.type === 'STEP_GUESS' && e.payload && e.payload.imageUrl) {
+          $('garticGuessImageUrl').value = fullApiUrl(e.payload.imageUrl);
+          log('🖼 STEP_GUESS: картинка по HTTP: ' + $('garticGuessImageUrl').value + ' (кнопка «Скачать PNG»)', 'info');
+          shown = { ...e.payload };
+          if (shown.imageBase64 && String(shown.imageBase64).length > 120) {
+            shown = { ...shown, imageBase64: shown.imageBase64.slice(0, 80) + '… (truncated)' };
+          }
+        }
+        log('👉 [ЛИЧНО ' + e.type + '] ' + JSON.stringify(shown, null, 2), 'in');
+      });
+      log('👂 Subscribed (твои шаги игры): ' + userDest, 'out');
+      log('Создай игру, ready, start. Команды игры — только когда пришёл STEP_* в личный топик.', 'info');
     }
 
     function parseEvent(body) {
       try { return JSON.parse(body); } catch(_) { return { type: 'RAW', payload: body }; }
+    }
+
+    function apiOrigin() {
+      return 'http://localhost:8080';
+    }
+
+    function fullApiUrl(path) {
+      if (!path) return '';
+      if (String(path).startsWith('http')) return path;
+      return apiOrigin() + path;
+    }
+
+    async function downloadGarticGuessPng() {
+      const u = $('garticGuessImageUrl').value.trim();
+      if (!u) { log('⚠️ Нет URL — дождись STEP_GUESS с imageUrl', 'err'); return; }
+      log('➡️ GET ' + u + ' (binary)', 'out');
+      try {
+        const r = await fetch(u, { headers: { 'Authorization': 'Bearer ' + tok() } });
+        if (!r.ok) { log('← ' + r.status + ' ошибка скачивания', 'err'); return; }
+        const blob = await r.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'gartic-guess.png';
+        a.click();
+        URL.revokeObjectURL(a.href);
+        log('← PNG сохранён локально', 'in');
+      } catch (e) { log('❌ ' + e, 'err'); }
     }
 
     function chk() {
@@ -378,7 +443,7 @@
     /* ── REST ────────────────────────────────────────────────────── */
     function api(method, url) {
       log(`➡️ ${method} ${url}`, 'out');
-      return fetch('http://localhost:8080'+url, {
+      return fetch(apiOrigin()+url, {
         method,
         headers: {
           'Authorization': 'Bearer '+tok(),
@@ -597,6 +662,12 @@
       api('POST', `/api/games/${g}/start`);
     }
 
+    function gameStop() {
+      const g = gid();
+      if (!g) { log('⚠️ Нужен Game ID', 'err'); return; }
+      api('POST', `/api/games/${g}/stop`);
+    }
+
     function wsPlayerReady() {
       if (!chk()) return;
       const g = gid();
@@ -661,14 +732,71 @@
       stompClient.send(dest, {}, JSON.stringify(payload));
     }
 
+    /** 1×1 white PNG — валидный минимальный тест (как белый холст в игре). */
+    function setTinyTestPng() {
+      const u = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMBAAZ9l1cAAAAASUVORK5CYII=';
+      $('garticDrawingValue').value = u;
+      log('Заполнено поле рисунка: мини-PNG 1×1 (data URL).', 'info');
+    }
+
+    $('garticPngFile').addEventListener('change', async function (ev) {
+      const f = ev.target.files && ev.target.files[0];
+      ev.target.value = '';
+      if (!f) return;
+      if (f.type === 'image/png') {
+        const g = gid();
+        if (!g) { log('⚠️ Введи Game ID для POST upload', 'err'); return; }
+        if (!tok()) { log('⚠️ Нужен JWT в поле токена', 'err'); return; }
+        const fd = new FormData();
+        fd.append('file', f, f.name || 'draw.png');
+        log('➡️ POST ' + apiOrigin() + '/api/games/' + g + '/gartic/drawings (multipart)', 'out');
+        try {
+          const r = await fetch(apiOrigin() + '/api/games/' + g + '/gartic/drawings', {
+            method: 'POST',
+            headers: { 'Authorization': 'Bearer ' + tok() },
+            body: fd
+          });
+          const txt = await r.text();
+          log('← ' + r.status + ': ' + txt, r.ok ? 'in' : 'err');
+          if (!r.ok) return;
+          const j = JSON.parse(txt);
+          $('garticDrawingAssetId').value = j.drawingAssetId || '';
+          log('✅ Жми SUBMIT_DRAWING — уйдёт drawingAssetId без base64 в WebSocket', 'info');
+        } catch (e) { log('❌ ' + e, 'err'); }
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = function () {
+        const dataUrl = String(reader.result || '');
+        if (!dataUrl.startsWith('data:image')) {
+          log('⚠️ Ожидался data URL картинки', 'err');
+          return;
+        }
+        $('garticDrawingValue').value = dataUrl;
+        $('garticDrawingAssetId').value = '';
+        log('Картинка в legacy-поле (data URL), длина: ' + dataUrl.length + '. Жми SUBMIT_DRAWING.', 'in');
+      };
+      reader.onerror = function () { log('⚠️ Не удалось прочитать файл', 'err'); };
+      reader.readAsDataURL(f);
+    });
+
     function wsSubmitDrawing() {
       if (!chk()) return;
       const g = gid();
       if (!g) { log('⚠️ Нужен Game ID', 'err'); return; }
-      const imageBase64 = $('garticDrawingValue').value.trim() || 'data:image/png;base64,AA==';
-      const payload = { type: 'SUBMIT_DRAWING', payload: { imageBase64 } };
       const dest = `/app/game/${g}/action`;
-      log(`WS SEND ${dest}: ` + JSON.stringify(payload), 'out');
+      const assetId = $('garticDrawingAssetId').value.trim();
+      let payload;
+      if (assetId) {
+        payload = { type: 'SUBMIT_DRAWING', payload: { drawingAssetId: assetId } };
+        log(`WS SEND ${dest}: ` + JSON.stringify(payload), 'out');
+      } else {
+        const imageBase64 = $('garticDrawingValue').value.trim() ||
+          'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMBAAZ9l1cAAAAASUVORK5CYII=';
+        payload = { type: 'SUBMIT_DRAWING', payload: { imageBase64 } };
+        const preview = imageBase64.length > 120 ? imageBase64.slice(0, 80) + '… (' + imageBase64.length + ' chars)' : imageBase64;
+        log(`WS SEND ${dest}: {"type":"SUBMIT_DRAWING","payload":{"imageBase64":"${preview}"}}`, 'out');
+      }
       stompClient.send(dest, {}, JSON.stringify(payload));
     }
 

@@ -15,6 +15,10 @@ spring:
     enabled: true
     baseline-on-migrate: true
     locations: classpath:db/migration
+  servlet:
+    multipart:
+      max-file-size: 3MB
+      max-request-size: 3MB
 
 server:
   port: 8080
@@ -45,3 +49,15 @@ bots:
     # guess-url: http://127.0.0.1:8092/api/guess
     draw-url: ${BOTS_INFERENCE_DRAW_URL:}
     guess-url: ${BOTS_INFERENCE_GUESS_URL:}
+    text-url: ${BOTS_INFERENCE_TEXT_URL:}
+
+games:
+  bot:
+    schedule-after-commit: ${GAMES_BOT_SCHEDULE_AFTER_COMMIT:true}
+  trace:
+    enabled: ${GAMES_TRACE_ENABLED:true}
+    dir: ${GAMES_TRACE_DIR:/tmp/game-traces}
+  gartic-assets:
+    dir: ${GARTIC_ASSETS_DIR:./gartic-assets}
+  # Optional override: filesystem path or classpath:... (see GameService). If unset, bundled gartic-bot-drawing-placeholder.png is used.
+  gartic-bot-drawing-placeholder: ${GARTIC_BOT_DRAWING_PLACEHOLDER:}

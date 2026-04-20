@@ -1056,17 +1056,39 @@ POST /api/rooms/{roomId}/games      // body: { "gameType": "GARTIC_PHONE" }
 GET  /api/rooms/{roomId}/games/current
 POST /api/games/{gameId}/ready
 POST /api/games/{gameId}/start
+POST /api/games/{gameId}/gartic/drawings   // multipart: поле `file` (PNG), только пока игра IN_PROGRESS
+GET  /api/games/{gameId}/gartic/drawings/{drawingAssetId}   // скачать PNG (тот же JWT, участник комнаты)
 ```
 
-### 10.2. WebSocket события (подписка `/topic/game/{gameId}`)
+Ответ `POST .../gartic/drawings`:
 
-- `GAME_STARTED`
-- `STEP_WRITE` — первый шаг, написать фразу (`timeLimit: 60`)
+```json
+{ "drawingAssetId": "uuid", "imageUrl": "/api/games/{gameId}/gartic/drawings/{drawingAssetId}" }
+```
+
+Дальше в WebSocket `SUBMIT_DRAWING` передаёте только `drawingAssetId` — без base64 в STOMP.
+
+### 10.2. WebSocket события
+
+**Общий топик** — подписка `destination:/topic/game/{gameId}`:
+
+- `GAME_STARTED`, `REVEAL_CHAIN`, `GAME_FINISHED`, `BOT_ADDED`, `PLAYER_READY`, …
+
+**Личные шаги Gartic** (`STEP_WRITE`, `STEP_DRAW`, `STEP_GUESS`, `WAITING_FOR_OTHERS`) сервер шлёт **только текущему игроку** через user-destination. Нужна вторая подписка (principal = ваш `userId` из JWT):
+
+```text
+destination:/user/topic/game/{gameId}
+```
+
+Без неё в общем `/topic/game/...` вы не увидите свой ход — только события для всех.
+
+- `STEP_WRITE` — написать фразу (`timeLimit: 60`)
 - `STEP_DRAW` — нарисовать по фразе (`timeLimit: 90`)
-- `STEP_GUESS` — угадать по рисунку (`timeLimit: 60`)
-- `WAITING_FOR_OTHERS`
-- `REVEAL_CHAIN` — финальный показ всех цепочек
-- `GAME_FINISHED` — завершение игры, `scores: []`
+- `STEP_GUESS` — угадать по рисунку (`timeLimit: 60`). Картинка: `drawingAssetId` + относительный `imageUrl` (скачать через GET выше с Bearer). Поле `imageBase64` больше не используется в нормальном потоке (оставлено только для совместимости со старыми данными).
+- `WAITING_FOR_OTHERS` — вы уже сходили, ждёте остальных
+- `ACTION_ACCEPTED` — сервер принял ваш `SUBMIT_*` (клиенту можно показывать "ход сохранён")
+
+В общем топике дополнительно: `REVEAL_CHAIN`, `GAME_FINISHED` (и др.).
 
 Пример:
 
@@ -1087,6 +1109,14 @@ POST /api/games/{gameId}/start
 { "type": "SUBMIT_PHRASE",  "payload": { "text": "Кот в космосе ест пиццу" } }
 ```
 
+Предпочтительно (после `POST .../gartic/drawings`):
+
+```json
+{ "type": "SUBMIT_DRAWING", "payload": { "drawingAssetId": "uuid" } }
+```
+
+Устаревший вариант (тяжёлый для WebSocket):
+
 ```json
 { "type": "SUBMIT_DRAWING", "payload": { "imageBase64": "data:image/png;base64,..." } }
 ```
@@ -1104,7 +1134,7 @@ POST /api/games/{gameId}/start
 - Таймауты:
   - текстовый шаг (`STEP_WRITE`, `STEP_GUESS`) -> `...`
   - шаг рисования (`STEP_DRAW`) -> белый PNG.
-- Ограничение на рисунок: примерно до 2 MB base64 payload.
+- Ограничение на рисунок: до ~2 MB декодированного PNG (multipart или legacy base64). На диске шаг хранится как `asset:uuid`; в WebSocket уходят только `drawingAssetId` и `imageUrl`.
 
 ### 10.5. Пример Kotlin модели события
 
@@ -1117,7 +1147,7 @@ data class GameEventEnvelope(
 )
 ```
 
-### 10.6. Боты в Gartic (Android integration)
+### 10.6. Боты в играх (Gartic + Quiplash)
 
 REST для лобби ботов:
 
@@ -1132,6 +1162,12 @@ DELETE /api/games/{gameId}/bots/{botId}
 ```json
 { "botType": "GARTIC_DRAWER", "count": 1 }
 ```
+
+Поддерживаемые `botType`:
+- `GARTIC_BOT` — один универсальный бот на Gartic (в игре выполняет все роли по очереди, как человек)
+- `GARTIC_DRAWER`, `GARTIC_WRITER`, `GARTIC_GUESSER` — то же поведение в рантайме, различаются только шаблоном в каталоге
+- `QUIPLASH_BOT` — универсальный бот Quiplash (ответы + голоса)
+- `QUIPLASH_JOKER`, `QUIPLASH_VOTER` — то же по смыслу, уточнение роли в каталоге
 
 Ответом приходит обычный `GameResponse`, где у ботов:
 - `players[].isBot = true`
@@ -1185,9 +1221,16 @@ WS-события для UI лобби:
 - `BOT_ADDED` `{ botId, name, avatarUrl }`
 - `BOT_REMOVED` `{ botId }`
 
-Во время игры изображения и подписи приходят как раньше в `STEP_*`/`REVEAL_CHAIN`:
-- `STEP_GUESS.payload.imageBase64`
-- `REVEAL_CHAIN.payload.chains[].steps[].content` (для `type = DRAWING`)
+Во время `GARTIC_PHONE` в `STEP_GUESS` / `REVEAL_CHAIN` для шагов `DRAWING`:
+- `drawingAssetId`, `imageUrl` (относительный путь к GET выше); `content` для таких шагов — `null`.
+- Legacy: в старых сессиях в `content` мог остаться data URL — клиент может отобразить его, если `drawingAssetId` нет.
+
+Во время `QUIPLASH` боты автоматически:
+- отправляют ответы на `PROMPT_RECEIVED`,
+- голосуют на этапе `WAITING_FOR_VOTES`.
+
+От клиента ничего дополнительного не требуется: UI получает стандартные события
+`WAITING_FOR_VOTES`, `ROUND_RESULT`, `GAME_FINISHED`.
 
 ### 10.7. Как Android-команде проверить всё локально (через Docker)
 

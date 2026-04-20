@@ -4,6 +4,7 @@ services:
       INFERENCE_PROVIDER: local
       OLLAMA_URL: http://ollama:11434
       OLLAMA_VISION_MODEL: llava:7b
+      OLLAMA_TEXT_MODEL: llava:7b
       LOCAL_DRAW_URL: http://local-draw:7860/sdapi/v1/txt2img
       LOCAL_GUESS_URL: ""
     depends_on:

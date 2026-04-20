@@ -340,6 +340,9 @@ POST /api/rooms/{roomId}/tasks
 | POST | `/api/games/{gameId}/unready` | Снять готовность (только `LOBBY`) |
 | POST | `/api/games/{gameId}/leave` | Выйти из лобби игры (только `LOBBY`); если игроков не осталось — сессия удаляется |
 | POST | `/api/games/{gameId}/start` | Старт игры (минимум 3 ready игрока) |
+| GET | `/api/bots/available` | Список доступных ботов |
+| POST | `/api/games/{gameId}/bots/add` | Добавить ботов в лобби (GARTIC_* / QUIPLASH_*) |
+| DELETE | `/api/games/{gameId}/bots/{botId}` | Убрать бота из лобби |
 
 При старте учитываются только игроки с `isReady=true`: если ready-игроков 3+, игра стартует сразу, а неготовые удаляются из лобби и получают персональное WS-событие `PLAYER_KICKED`.
 
@@ -356,6 +359,10 @@ POST /api/rooms/{roomId}/tasks
 `gameType` может быть:
 - `QUIPLASH`
 - `GARTIC_PHONE`
+
+`botType` для `/bots/add`:
+- для `GARTIC_PHONE`: `GARTIC_DRAWER`, `GARTIC_WRITER`, `GARTIC_GUESSER`
+- для `QUIPLASH`: `QUIPLASH_JOKER`, `QUIPLASH_VOTER`
 
 **Create game response:**
 

@@ -1,17 +1,19 @@
 import base64
 import os
+import traceback
 from datetime import datetime, timezone
 from io import BytesIO
 from threading import Lock
 from uuid import uuid4
 
 import torch
-from diffusers import StableDiffusionPipeline
+from diffusers import DDIMScheduler, StableDiffusionPipeline
 from fastapi import FastAPI
 from PIL import Image
 from pydantic import BaseModel
 
-MODEL_ID = "segmind/tiny-sd"
+# segmind/tiny-sd — лёгкий; при битом кэше HF см. README (очистить volume hf_cache).
+MODEL_ID = os.getenv("SD_MODEL_ID", "segmind/tiny-sd")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DTYPE = torch.float16 if DEVICE == "cuda" else torch.float32
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", "/generated")
@@ -25,8 +27,8 @@ _pipe_lock = Lock()
 class Txt2ImgRequest(BaseModel):
     prompt: str
     negative_prompt: str | None = None
-    steps: int = 12
-    cfg_scale: float = 6.0
+    steps: int = 20
+    cfg_scale: float = 7.0
     width: int = 512
     height: int = 512
 
@@ -36,7 +38,17 @@ def get_pipe() -> StableDiffusionPipeline:
     if _pipe is None:
         with _pipe_lock:
             if _pipe is None:
-                pipe = StableDiffusionPipeline.from_pretrained(MODEL_ID, torch_dtype=DTYPE)
+                # Некоторые снапшоты tiny-sd содержат только .bin, не .safetensors в vae
+                pipe = StableDiffusionPipeline.from_pretrained(
+                    MODEL_ID,
+                    torch_dtype=DTYPE,
+                    safety_checker=None,
+                    requires_safety_checker=False,
+                    use_safetensors=False,
+                )
+                # Euler/DPMSolver с «чужим» config дают IndexError по sigmas (diffusers 0.30 + tiny-sd).
+                # DDIM — стабильный классический планировщик для SD1.x.
+                pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
                 if DEVICE == "cuda":
                     pipe = pipe.to("cuda")
                 else:
@@ -71,13 +83,19 @@ def txt2img(request: Txt2ImgRequest) -> dict:
     pipe = get_pipe()
     width = max(256, min(request.width, 768))
     height = max(256, min(request.height, 768))
-    image = pipe(
-        prompt=request.prompt,
-        negative_prompt=request.negative_prompt,
-        num_inference_steps=max(4, min(request.steps, 30)),
-        guidance_scale=max(1.0, min(request.cfg_scale, 12.0)),
-        width=width,
-        height=height,
-    ).images[0]
+    # DDIM: 20–30 шагов — нормальный диапазон; не поднимать до 50 на CPU без нужды
+    steps = max(15, min(int(request.steps), 35))
+    try:
+        image = pipe(
+            prompt=request.prompt,
+            negative_prompt=request.negative_prompt,
+            num_inference_steps=steps,
+            guidance_scale=max(1.0, min(request.cfg_scale, 12.0)),
+            width=width,
+            height=height,
+        ).images[0]
+    except Exception:
+        traceback.print_exc()
+        raise
     saved_path = save_image_png(image)
     return {"images": [image_to_base64(image)], "savedPath": saved_path}

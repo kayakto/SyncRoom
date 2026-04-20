@@ -8,6 +8,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -23,14 +24,17 @@ import ru.syncroom.users.domain.User;
 import ru.syncroom.users.repository.UserRepository;
 
 import java.time.OffsetDateTime;
+import java.util.Base64;
 import java.util.UUID;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.hasItem;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -151,6 +155,55 @@ class GameControllerTest {
     }
 
     @Test
+    @DisplayName("GARTIC: загрузка PNG в лобби запрещена")
+    void garticDrawingUploadRejectedInLobby() throws Exception {
+        String createResp = mockMvc.perform(post("/api/rooms/{roomId}/games", room.getId())
+                        .header("Authorization", "Bearer " + t1)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"gameType\":\"GARTIC_PHONE\"}"))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        UUID gid = UUID.fromString(extractGameId(createResp));
+        byte[] png = Base64.getDecoder().decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMBAAZ9l1cAAAAASUVORK5CYII=");
+        MockMultipartFile file = new MockMultipartFile("file", "t.png", "image/png", png);
+        mockMvc.perform(multipart("/api/games/{gameId}/gartic/drawings", gid)
+                        .file(file)
+                        .header("Authorization", "Bearer " + t1))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @DisplayName("GARTIC: multipart upload + GET скачивание PNG")
+    void garticDrawingUploadAndDownload() throws Exception {
+        String createResp = mockMvc.perform(post("/api/rooms/{roomId}/games", room.getId())
+                        .header("Authorization", "Bearer " + t1)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"gameType\":\"GARTIC_PHONE\"}"))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        UUID gid = UUID.fromString(extractGameId(createResp));
+        mockMvc.perform(post("/api/games/{gameId}/ready", gid).header("Authorization", "Bearer " + t1)).andExpect(status().isOk());
+        mockMvc.perform(post("/api/games/{gameId}/ready", gid).header("Authorization", "Bearer " + t2)).andExpect(status().isOk());
+        mockMvc.perform(post("/api/games/{gameId}/ready", gid).header("Authorization", "Bearer " + t3)).andExpect(status().isOk());
+        mockMvc.perform(post("/api/games/{gameId}/start", gid).header("Authorization", "Bearer " + t1)).andExpect(status().isOk());
+
+        byte[] png = Base64.getDecoder().decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMBAAZ9l1cAAAAASUVORK5CYII=");
+        MockMultipartFile file = new MockMultipartFile("file", "d.png", "image/png", png);
+        String up = mockMvc.perform(multipart("/api/games/{gameId}/gartic/drawings", gid)
+                        .file(file)
+                        .header("Authorization", "Bearer " + t1))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.drawingAssetId").exists())
+                .andExpect(jsonPath("$.imageUrl").exists())
+                .andReturn().getResponse().getContentAsString();
+        String assetId = up.replaceAll("(?s).*\"drawingAssetId\"\\s*:\\s*\"([^\"]+)\".*", "$1");
+        mockMvc.perform(get("/api/games/{gameId}/gartic/drawings/{assetId}", gid, UUID.fromString(assetId))
+                        .header("Authorization", "Bearer " + t2))
+                .andExpect(status().isOk())
+                .andExpect(content().bytes(png));
+    }
+
+    @Test
     @DisplayName("Боты для GARTIC: available + add + remove")
     void botsAvailableAddAndRemove() throws Exception {
         String createResp = mockMvc.perform(post("/api/rooms/{roomId}/games", room.getId())
@@ -202,6 +255,25 @@ class GameControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.players", hasSize(3)))
                 .andExpect(jsonPath("$.players[?(@.isBot == true)]", hasSize(2)));
+    }
+
+    @Test
+    @DisplayName("Боты для QUIPLASH: add QUIPLASH_JOKER добавляет бота в лобби")
+    void quiplashBotsCanBeAdded() throws Exception {
+        String createResp = mockMvc.perform(post("/api/rooms/{roomId}/games", room.getId())
+                        .header("Authorization", "Bearer " + t1)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"gameType\":\"QUIPLASH\"}"))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        UUID gid = UUID.fromString(extractGameId(createResp));
+
+        mockMvc.perform(post("/api/games/{gameId}/bots/add", gid)
+                        .header("Authorization", "Bearer " + t1)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"botType\":\"QUIPLASH_JOKER\",\"count\":1}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.players[?(@.isBot == true)]", hasSize(1)));
     }
 
     @Test

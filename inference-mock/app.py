@@ -16,6 +16,7 @@ app = FastAPI(title="SyncRoom Local Inference Mock")
 PROVIDER = os.getenv("INFERENCE_PROVIDER", "local").lower()
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "llava:7b")
+OLLAMA_TEXT_MODEL = os.getenv("OLLAMA_TEXT_MODEL", OLLAMA_VISION_MODEL)
 LOCAL_DRAW_URL = os.getenv(
     "LOCAL_DRAW_URL", "http://host.docker.internal:7860/sdapi/v1/txt2img"
 ).strip()
@@ -36,6 +37,14 @@ class GuessRequest(BaseModel):
 
 
 class GuessResponse(BaseModel):
+    text: str
+
+
+class TextRequest(BaseModel):
+    prompt: str
+
+
+class TextResponse(BaseModel):
     text: str
 
 
@@ -64,12 +73,14 @@ def _save_data_url_png(image_data_url: str) -> Optional[str]:
 
 
 def _mock_draw(prompt: str) -> str:
-    # Tiny generated image with prompt hint for quick local testing.
-    img = Image.new("RGB", (320, 180), color=(245, 245, 245))
+    # Shown only when LOCAL_DRAW_URL is unreachable or returns an error — not a real sketch.
+    img = Image.new("RGB", (512, 280), color=(245, 245, 245))
     drawer = ImageDraw.Draw(img)
-    short_prompt = (prompt or "empty prompt").strip()[:42]
-    drawer.text((10, 20), "SyncRoom Bot Draw", fill=(20, 20, 20))
-    drawer.text((10, 65), short_prompt, fill=(0, 90, 180))
+    short_prompt = (prompt or "empty prompt").strip()[:72]
+    drawer.text((10, 12), "FALLBACK (no local SD)", fill=(160, 40, 40))
+    drawer.text((10, 42), "Check LOCAL_DRAW_URL / docker-compose.local-ai.yml", fill=(20, 20, 20))
+    drawer.text((10, 72), "Phrase for draw:", fill=(60, 60, 60))
+    drawer.text((10, 102), short_prompt, fill=(0, 90, 180))
     return _png_data_url_from_image(img)
 
 
@@ -104,13 +115,27 @@ def _ollama_guess(image_base64: str) -> Optional[str]:
         return None
 
 
+def _ollama_text(prompt: str) -> Optional[str]:
+    try:
+        payload = {
+            "model": OLLAMA_TEXT_MODEL,
+            "prompt": prompt,
+            "stream": False,
+        }
+        resp = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        text = str(data.get("response", "")).strip()
+        return text if text else None
+    except Exception:
+        return None
+
+
 def _human_style_prompt(prompt: str, draw_seconds: int = 25) -> str:
-    clean_prompt = (prompt or "").strip()
+    # CLIP в SD1.x — около 77 токенов; длинный русский текст даёт truncation и мусор на выходе.
+    clean_prompt = (prompt or "").strip()[:80]
     return (
-        f"Сгенерируй изображение: {clean_prompt}. "
-        f"Условие: это рисунок, который нарисовал человек за {draw_seconds} секунд. "
-        "Используй простые линии, минимум деталей, легкую кривизну, "
-        "немного неровные контуры, как быстрый скетч маркером."
+        f"Very simple doodle, thick rough lines, minimal details, mouse drawing in {draw_seconds}s: {clean_prompt}"
     )
 
 
@@ -120,17 +145,18 @@ def _local_draw(prompt: str) -> Optional[str]:
     try:
         payload = {
             "prompt": _human_style_prompt(prompt),
-            "negative_prompt": "photorealistic, high detail, 3d render",
-            "steps": 12,
-            "cfg_scale": 6,
-            "width": 512,
-            "height": 512,
+            "negative_prompt": "photorealistic, realistic shading, high detail, 3d render, text, watermark",
+            # Keep draw latency below game timeout (90s) on CPU hosts.
+            "steps": 6,
+            "cfg_scale": 5,
+            "width": 320,
+            "height": 320,
         }
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
-        resp = requests.post(LOCAL_DRAW_URL, json=payload, headers=headers, timeout=90)
+        resp = requests.post(LOCAL_DRAW_URL, json=payload, headers=headers, timeout=180)
         resp.raise_for_status()
         body = resp.json()
         if isinstance(body, dict):
@@ -143,7 +169,8 @@ def _local_draw(prompt: str) -> Optional[str]:
             if isinstance(value, str) and value.strip():
                 return value if value.startswith("data:image") else f"data:image/png;base64,{value}"
         return None
-    except Exception:
+    except Exception as e:
+        print(f"[inference-mock] local draw failed: {e}", flush=True)
         return None
 
 
@@ -178,6 +205,11 @@ def draw(req: DrawRequest) -> DrawResponse:
         if image:
             _save_data_url_png(image)
             return DrawResponse(imageBase64=image)
+    print(
+        "[inference-mock] /api/draw: local SD failed or disabled; "
+        f"LOCAL_DRAW_URL={LOCAL_DRAW_URL!r}, using fallback PNG",
+        flush=True,
+    )
     fallback = _mock_draw(req.prompt)
     _save_data_url_png(fallback)
     return DrawResponse(imageBase64=fallback)
@@ -193,3 +225,30 @@ def guess(req: GuessRequest) -> GuessResponse:
         if guessed:
             return GuessResponse(text=guessed)
     return GuessResponse(text=_mock_guess(req.imageBase64))
+
+
+def _fallback_text(prompt: str) -> str:
+    p = (prompt or "").lower()
+    if "gartic" in p or "фразу" in p:
+        return random.choice([
+            "кот в тапках ест морковку",
+            "динозавр на самокате",
+            "пицца в космосе",
+            "чайник играет в футбол",
+        ])
+    if "quiplash" in p or "вопрос" in p:
+        return random.choice([
+            "Это звучит как плохая, но гениальная идея",
+            "Только если после этого дадут пиццу",
+            "План отличный, но кот против",
+            "Я бы ответил, но меня опередил тостер",
+        ])
+    return "кот в очках"
+
+
+@app.post("/api/text", response_model=TextResponse)
+def text(req: TextRequest) -> TextResponse:
+    generated = _ollama_text(req.prompt)
+    if generated:
+        return TextResponse(text=generated)
+    return TextResponse(text=_fallback_text(req.prompt))

@@ -28,3 +28,12 @@ logging:
     root: WARN
     ru.syncroom: DEBUG
 
+games:
+  bot:
+    schedule-after-commit: false
+  trace:
+    enabled: false
+  gartic-assets:
+    dir: ./build/gartic-assets-test
+  gartic-bot-drawing-placeholder: classpath:test-gartic-bot-placeholder.png
+
