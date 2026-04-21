@@ -28,5 +28,9 @@ public class QuiplashPrompt {
 
     @Column(name = "time_limit", nullable = false)
     private Integer timeLimit;
+
+    /** Запись из {@code prompt_bank}; в одной игре не повторяем id до исчерпания банка. */
+    @Column(name = "prompt_bank_id")
+    private UUID promptBankId;
 }
 

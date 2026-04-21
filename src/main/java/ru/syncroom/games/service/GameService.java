@@ -32,6 +32,7 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ThreadLocalRandom;
@@ -524,14 +525,38 @@ public class GameService {
         }
     }
 
+    /**
+     * Случайный промпт из банка, без повторения {@code prompt_bank_id} в рамках одной игры.
+     * Если свободных записей не хватает (банк меньше числа раундов), допускается повтор.
+     */
+    private PromptBank pickQuiplashPromptBankEntry(GameSession game) {
+        List<PromptBank> bank = promptBankRepository.findAllByOrderByIdAsc();
+        if (bank.isEmpty()) {
+            return null;
+        }
+        Set<UUID> usedBankIds = promptRepository.findByGameIdOrderByRoundAsc(game.getId()).stream()
+                .map(QuiplashPrompt::getPromptBankId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toCollection(HashSet::new));
+        List<PromptBank> available = bank.stream()
+                .filter(p -> !usedBankIds.contains(p.getId()))
+                .collect(Collectors.toList());
+        if (available.isEmpty()) {
+            available = bank;
+        }
+        return available.get(ThreadLocalRandom.current().nextInt(available.size()));
+    }
+
     private void startRound(GameSession game, int round) {
-        String promptText = promptBankRepository.findAll().stream().skip(Math.max(0, round - 1)).findFirst()
-                .map(PromptBank::getText).orElse("Промпт раунда " + round);
+        PromptBank bankEntry = pickQuiplashPromptBankEntry(game);
+        String promptText = bankEntry != null ? bankEntry.getText() : "Промпт раунда " + round;
+        UUID promptBankId = bankEntry != null ? bankEntry.getId() : null;
         QuiplashPrompt prompt = promptRepository.save(QuiplashPrompt.builder()
                 .game(game)
                 .round(round)
                 .text(promptText)
                 .timeLimit(60)
+                .promptBankId(promptBankId)
                 .build());
         eventSender.sendToGame(game.getId(), "PROMPT_RECEIVED", Map.of(
                 "promptId", prompt.getId().toString(),

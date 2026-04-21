@@ -7,6 +7,6 @@ import java.util.List;
 import java.util.UUID;
 
 public interface PromptBankRepository extends JpaRepository<PromptBank, UUID> {
-    List<PromptBank> findAll();
+    List<PromptBank> findAllByOrderByIdAsc();
 }
 
