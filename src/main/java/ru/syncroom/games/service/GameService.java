@@ -2,6 +2,7 @@ package ru.syncroom.games.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.hibernate.LazyInitializationException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,10 +24,16 @@ import ru.syncroom.rooms.repository.RoomRepository;
 import ru.syncroom.users.domain.User;
 import ru.syncroom.users.repository.UserRepository;
 
-import java.io.InputStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
+import javax.imageio.ImageIO;
+import java.awt.BasicStroke;
+import java.awt.Color;
+import java.awt.Graphics2D;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ThreadLocalRandom;
 
 @Service
@@ -58,16 +65,14 @@ public class GameService {
     private static final int GARTIC_DRAW_TIMEOUT_SEC = 90;
     private static final int GARTIC_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
     private static final int BOT_STEP_MAX_RETRIES = 3;
+    private static final int BOT_DRAW_MODEL_TIMEOUT_SEC = 3;
     private static final String DEFAULT_TEXT = "...";
     private static final String WHITE_PNG_BASE64 = "data:image/png;base64,"
             + "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMBAAZ9l1cAAAAASUVORK5CYII=";
-    private static final byte[] PNG_MAGIC = new byte[]{(byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
-
     @Value("${games.bot.schedule-after-commit:true}")
     private boolean scheduleBotAfterCommit;
 
-    @Value("${games.gartic-bot-drawing-placeholder:}")
-    private String garticBotDrawingPlaceholder;
+    private final Map<UUID, Object> garticLocks = new ConcurrentHashMap<>();
 
     @Transactional
     public GameResponse createGame(UUID roomId, UUID creatorId, String gameType) {
@@ -696,7 +701,7 @@ public class GameService {
             if (isHuman(actor)) {
                 eventSender.sendToPlayer(gameId, actor.getUser().getId(), "WAITING_FOR_OTHERS", Map.of("stepNumber", currentStep));
             }
-            gameTraceLogger.trace(gameId, "GARTIC_STEP_DUPLICATE step=" + currentStep + " actor=" + participantName(actor));
+            gameTraceLogger.trace(gameId, "GARTIC_STEP_DUPLICATE step=" + currentStep + " actor=" + participantNameSafe(actor));
             return;
         }
         String normalizedContent = normalizeGarticContent(gameId, expectedType, submittedContent);
@@ -710,7 +715,7 @@ public class GameService {
         long submittedNow = garticStepRepository.countByChainGameIdAndStepNumber(gameId, currentStep);
         gameTraceLogger.trace(gameId, "GARTIC_STEP_SUBMITTED step=" + currentStep
                 + " expectedType=" + expectedType
-                + " actor=" + participantName(actor)
+                + " actor=" + participantNameSafe(actor)
                 + " submitted=" + submittedNow + "/" + orderedPlayers.size());
         if (isHuman(actor) && submittedNow < orderedPlayers.size()) {
             eventSender.sendToPlayer(gameId, actor.getUser().getId(), "WAITING_FOR_OTHERS", Map.of(
@@ -723,22 +728,25 @@ public class GameService {
     }
 
     private void finishOrAdvanceGartic(UUID gameId, List<GamePlayer> orderedPlayers, int currentStep) {
-        long submitted = garticStepRepository.countByChainGameIdAndStepNumber(gameId, currentStep);
-        if (submitted < orderedPlayers.size()) {
-            gameTraceLogger.trace(gameId, "GARTIC_STEP_WAIT step=" + currentStep + " submitted=" + submitted + "/" + orderedPlayers.size());
-            return;
+        Object lock = garticLocks.computeIfAbsent(gameId, id -> new Object());
+        synchronized (lock) {
+            long submitted = garticStepRepository.countByChainGameIdAndStepNumber(gameId, currentStep);
+            if (submitted < orderedPlayers.size()) {
+                gameTraceLogger.trace(gameId, "GARTIC_STEP_WAIT step=" + currentStep + " submitted=" + submitted + "/" + orderedPlayers.size());
+                return;
+            }
+            gameTimerService.cancel(garticStepKey(gameId, currentStep));
+            gameTraceLogger.trace(gameId, "GARTIC_STEP_COMPLETE step=" + currentStep + " submitted=" + submitted);
+            if (currentStep >= orderedPlayers.size()) {
+                gameTraceLogger.trace(gameId, "GARTIC_REVEAL_START");
+                revealAndFinishGartic(gameId);
+                return;
+            }
+            int nextStep = currentStep + 1;
+            gameTraceLogger.trace(gameId, "GARTIC_STEP_ADVANCE nextStep=" + nextStep);
+            sendGarticStepInstructions(gameId, orderedPlayers, nextStep);
+            scheduleGarticTimeout(gameId, nextStep);
         }
-        gameTimerService.cancel(garticStepKey(gameId, currentStep));
-        gameTraceLogger.trace(gameId, "GARTIC_STEP_COMPLETE step=" + currentStep + " submitted=" + submitted);
-        if (currentStep >= orderedPlayers.size()) {
-            gameTraceLogger.trace(gameId, "GARTIC_REVEAL_START");
-            revealAndFinishGartic(gameId);
-            return;
-        }
-        int nextStep = currentStep + 1;
-        gameTraceLogger.trace(gameId, "GARTIC_STEP_ADVANCE nextStep=" + nextStep);
-        sendGarticStepInstructions(gameId, orderedPlayers, nextStep);
-        scheduleGarticTimeout(gameId, nextStep);
     }
 
     private void onGarticStepTimeout(UUID gameId, int stepNumber) {
@@ -759,7 +767,7 @@ public class GameService {
                         .stepNumber(stepNumber)
                         .stepType(expectedType)
                         .content("DRAWING".equals(expectedType)
-                                ? saveDrawingFallbackAssetRef(gameId).assetRef()
+                                ? garticDrawingAssetStorage.saveDataUrlAsAssetRef(gameId, WHITE_PNG_BASE64, GARTIC_IMAGE_MAX_BYTES)
                                 : DEFAULT_TEXT)
                         .build());
             }
@@ -781,7 +789,7 @@ public class GameService {
                 if (isHuman(player)) {
                     eventSender.sendToPlayer(gameId, player.getUser().getId(), "STEP_DRAW", payload);
                 } else {
-                    scheduleBotStep(gameId, player, stepNumber, "DRAWING", botDraw(gameId, phrase));
+                    scheduleBotDrawingStep(gameId, player, stepNumber, phrase);
                 }
             } else if (stepNumber == 1) {
                 payload.put("stepNumber", 1);
@@ -789,12 +797,12 @@ public class GameService {
                 if (isHuman(player)) {
                     eventSender.sendToPlayer(gameId, player.getUser().getId(), "STEP_WRITE", payload);
                 } else {
-                    scheduleBotStep(gameId, player, stepNumber, "TEXT", botPhrase());
+                    scheduleBotStep(gameId, player, stepNumber, "TEXT", botPhrase(gameId));
                 }
             } else {
                 String storedDrawing = garticStepRepository.findByChainIdAndStepNumber(chain.getId(), stepNumber - 1)
                         .map(GarticStep::getContent)
-                        .orElseGet(() -> saveDrawingFallbackAssetRef(gameId).assetRef());
+                        .orElseGet(() -> garticDrawingAssetStorage.saveDataUrlAsAssetRef(gameId, WHITE_PNG_BASE64, GARTIC_IMAGE_MAX_BYTES));
                 putDrawingWsFields(gameId, payload, storedDrawing);
                 payload.put("timeLimit", GARTIC_TEXT_TIMEOUT_SEC);
                 if (isHuman(player)) {
@@ -868,7 +876,7 @@ public class GameService {
 
     private List<GamePlayer> orderedPlayers(List<GamePlayer> players) {
         return players.stream()
-                .sorted(Comparator.comparing(p -> participantId(p).toString()))
+                .sorted(Comparator.comparing(GamePlayer::getId))
                 .toList();
     }
 
@@ -956,18 +964,45 @@ public class GameService {
         return isHuman(player) ? player.getUser().getName() : player.getBotUser().getName();
     }
 
+    private String participantNameSafe(GamePlayer player) {
+        try {
+            return participantName(player);
+        } catch (LazyInitializationException ignored) {
+            try {
+                return "participant-" + participantId(player);
+            } catch (Exception ignoredToo) {
+                return "participant";
+            }
+        } catch (Exception ignored) {
+            return "participant";
+        }
+    }
+
     private String participantAvatar(GamePlayer player) {
         return isHuman(player) ? player.getUser().getAvatarUrl() : player.getBotUser().getAvatarUrl();
     }
 
+    private record BotActor(UUID gamePlayerId, UUID participantId, String name) {}
+
+    private BotActor toBotActor(GamePlayer botPlayer) {
+        UUID pid = botPlayer.getId();
+        try {
+            pid = participantId(botPlayer);
+        } catch (Exception ignored) {
+        }
+        String name = participantNameSafe(botPlayer);
+        return new BotActor(botPlayer.getId(), pid, name);
+    }
+
     private void scheduleBotStep(UUID gameId, GamePlayer botPlayer, int stepNumber, String type, String content) {
+        BotActor actor = toBotActor(botPlayer);
         int delaySec = ThreadLocalRandom.current().nextInt(1, 4);
-        String key = "game:" + gameId + ":bot:" + botPlayer.getId() + ":step:" + stepNumber + ":attempt:1";
+        String key = "game:" + gameId + ":bot:" + actor.gamePlayerId() + ":step:" + stepNumber + ":attempt:1";
         Runnable scheduleWork = () -> {
-            gameTraceLogger.trace(gameId, "BOT_STEP_SCHEDULED bot=" + participantName(botPlayer) + "(" + participantId(botPlayer) + ")"
+            gameTraceLogger.trace(gameId, "BOT_STEP_SCHEDULED bot=" + actor.name() + "(" + actor.participantId() + ")"
                     + " step=" + stepNumber + " type=" + type + " delaySec=" + delaySec);
             gameTimerService.schedule(key, delaySec, () ->
-                    executeBotStepWithRetry(gameId, botPlayer, stepNumber, type, content, 1));
+                    executeBotStepWithRetry(gameId, actor, stepNumber, type, content, 1));
         };
         // On startGame we are inside an open transaction; scheduling before commit can race and cause "Chain not found".
         if (scheduleBotAfterCommit && TransactionSynchronizationManager.isActualTransactionActive()) {
@@ -982,38 +1017,66 @@ public class GameService {
         }
     }
 
-    private void executeBotStepWithRetry(UUID gameId, GamePlayer botPlayer, int stepNumber, String type, String content, int attempt) {
+    private void executeBotStepWithRetry(UUID gameId, BotActor actor, int stepNumber, String type, String content, int attempt) {
+        GamePlayer botPlayer = gamePlayerRepository.findById(actor.gamePlayerId()).orElse(null);
+        if (botPlayer == null) {
+            gameTraceLogger.trace(gameId, "BOT_STEP_FAILED bot=" + actor.name() + "(" + actor.participantId() + ")"
+                    + " step=" + stepNumber + " type=" + type + " attempt=" + attempt + " reason=Player missing");
+            return;
+        }
         try {
             submitGarticStep(gameId, botPlayer, type, content);
-            gameTraceLogger.trace(gameId, "BOT_STEP_DONE bot=" + participantName(botPlayer) + "(" + participantId(botPlayer) + ")"
+            gameTraceLogger.trace(gameId, "BOT_STEP_DONE bot=" + actor.name() + "(" + actor.participantId() + ")"
                     + " step=" + stepNumber + " type=" + type + " attempt=" + attempt);
         } catch (Exception e) {
             String reason = e.getMessage();
             boolean retryable = reason != null && (reason.contains("Chain not found") || reason.contains("Player not found"));
             if (retryable && attempt < BOT_STEP_MAX_RETRIES) {
                 int nextAttempt = attempt + 1;
-                String retryKey = "game:" + gameId + ":bot:" + botPlayer.getId() + ":step:" + stepNumber + ":attempt:" + nextAttempt;
-                gameTraceLogger.trace(gameId, "BOT_STEP_RETRY bot=" + participantName(botPlayer) + "(" + participantId(botPlayer) + ")"
+                String retryKey = "game:" + gameId + ":bot:" + actor.gamePlayerId() + ":step:" + stepNumber + ":attempt:" + nextAttempt;
+                gameTraceLogger.trace(gameId, "BOT_STEP_RETRY bot=" + actor.name() + "(" + actor.participantId() + ")"
                         + " step=" + stepNumber + " type=" + type + " attempt=" + nextAttempt + " reason=" + reason);
                 gameTimerService.schedule(retryKey, 2, () ->
-                        executeBotStepWithRetry(gameId, botPlayer, stepNumber, type, content, nextAttempt));
+                        executeBotStepWithRetry(gameId, actor, stepNumber, type, content, nextAttempt));
                 return;
             }
             log.warn("Bot step failed: gameId={}, botPlayerId={}, step={}, type={}, attempt={}, reason={}",
-                    gameId, botPlayer.getId(), stepNumber, type, attempt, reason);
-            gameTraceLogger.trace(gameId, "BOT_STEP_FAILED bot=" + participantName(botPlayer) + "(" + participantId(botPlayer) + ")"
+                    gameId, actor.gamePlayerId(), stepNumber, type, attempt, reason);
+            gameTraceLogger.trace(gameId, "BOT_STEP_FAILED bot=" + actor.name() + "(" + actor.participantId() + ")"
                     + " step=" + stepNumber + " type=" + type + " attempt=" + attempt + " reason=" + reason);
         }
     }
 
-    private String botPhrase() {
-        return garticInferenceGateway.generatePhrase()
-                .orElseGet(() -> List.of(
-                        "кот в тапках ест морковку",
-                        "динозавр на самокате",
-                        "пицца в космосе",
-                        "чайник играет в футбол"
-                ).get(ThreadLocalRandom.current().nextInt(4)));
+    private String botPhrase(UUID gameId) {
+        // Try several times to avoid duplicate phrase collisions between bots.
+        Set<String> existing = garticChainRepository.findByGameId(gameId).stream()
+                .map(chain -> garticStepRepository.findByChainIdAndStepNumber(chain.getId(), 1)
+                        .map(GarticStep::getContent)
+                        .orElse(""))
+                .map(String::trim)
+                .map(String::toLowerCase)
+                .filter(s -> !s.isBlank() && !DEFAULT_TEXT.equals(s))
+                .collect(java.util.stream.Collectors.toSet());
+        for (int i = 0; i < 4; i++) {
+            Optional<String> generated = garticInferenceGateway.generatePhrase();
+            if (generated.isEmpty() || generated.get().isBlank()) {
+                continue;
+            }
+            String phrase = generated.get().trim();
+            String key = phrase.toLowerCase();
+            if (!existing.contains(key)) {
+                return phrase;
+            }
+        }
+        List<String> fallback = List.of(
+                "кот в тапках ест морковку",
+                "динозавр на самокате",
+                "пицца в космосе",
+                "чайник играет в футбол"
+        );
+        String phrase = fallback.get(ThreadLocalRandom.current().nextInt(fallback.size()));
+        gameTraceLogger.trace(gameId, "BOT_TEXT_RESULT kind=FALLBACK_LIST text=" + phrase);
+        return phrase;
     }
 
     private String botGuess(UUID gameId, String storedDrawing) {
@@ -1025,92 +1088,132 @@ public class GameService {
     }
 
     private String botDraw(UUID gameId, String phrase) {
-        Optional<String> generated = garticInferenceGateway.draw(phrase);
+        Optional<String> generated = CompletableFuture
+                .supplyAsync(() -> garticInferenceGateway.draw(phrase))
+                .completeOnTimeout(Optional.empty(), BOT_DRAW_MODEL_TIMEOUT_SEC, TimeUnit.SECONDS)
+                .exceptionally(ex -> Optional.empty())
+                .join();
         if (generated.isPresent() && !generated.get().isBlank()) {
             String ref = garticDrawingAssetStorage.saveDataUrlAsAssetRef(gameId, generated.get(), GARTIC_IMAGE_MAX_BYTES);
             gameTraceLogger.trace(gameId, "BOT_DRAW_RESULT kind=AI_IMAGE ref=" + ref);
             return ref;
         }
-        DrawingFallbackResult fb = saveDrawingFallbackAssetRef(gameId);
-        gameTraceLogger.trace(gameId, "BOT_DRAW_RESULT kind="
-                + (fb.usedPlaceholderPng() ? "PLACEHOLDER" : "WHITE_FALLBACK") + " ref=" + fb.assetRef());
-        return fb.assetRef();
-    }
-
-    private record DrawingFallbackResult(String assetRef, boolean usedPlaceholderPng) {}
-
-    /** When no real drawing: bundled/custom placeholder PNG, else 1×1 white PNG asset. */
-    private DrawingFallbackResult saveDrawingFallbackAssetRef(UUID gameId) {
-        byte[] placeholder = loadBotDrawingPlaceholderPng();
-        if (placeholder != null) {
-            UUID id = garticDrawingAssetStorage.savePngBytes(gameId, placeholder, GARTIC_IMAGE_MAX_BYTES);
-            return new DrawingFallbackResult(GarticDrawingAssetStorage.ASSET_PREFIX + id, true);
-        }
-        String ref = garticDrawingAssetStorage.saveDataUrlAsAssetRef(gameId, WHITE_PNG_BASE64, GARTIC_IMAGE_MAX_BYTES);
-        return new DrawingFallbackResult(ref, false);
-    }
-
-    /**
-     * PNG for fallbacks when inference is off or fails. Config {@code games.gartic-bot-drawing-placeholder}:
-     * filesystem path or {@code classpath:...}; if unset or unreadable, uses bundled {@code gartic-bot-drawing-placeholder.png}.
-     */
-    private byte[] loadBotDrawingPlaceholderPng() {
-        String p = garticBotDrawingPlaceholder;
-        if (p != null && !p.isBlank()) {
-            try {
-                if (p.startsWith("classpath:")) {
-                    String rel = p.substring("classpath:".length()).trim();
-                    try (InputStream in = Thread.currentThread().getContextClassLoader().getResourceAsStream(rel)) {
-                        if (in == null) {
-                            log.warn("Bot drawing placeholder classpath resource not found: {}", rel);
-                        } else {
-                            byte[] bytes = in.readAllBytes();
-                            if (bytes.length <= GARTIC_IMAGE_MAX_BYTES && looksLikePng(bytes)) {
-                                return bytes;
-                            }
-                            log.warn("Bot drawing placeholder invalid or too large: {}", p);
-                        }
-                    }
-                } else {
-                    byte[] fromFile = Files.readAllBytes(Path.of(p));
-                    if (fromFile.length <= GARTIC_IMAGE_MAX_BYTES && looksLikePng(fromFile)) {
-                        return fromFile;
-                    }
-                    log.warn("Bot drawing placeholder invalid or too large: {}", p);
-                }
-            } catch (Exception e) {
-                log.warn("Bot drawing placeholder not loaded from {}: {}", p, e.getMessage());
-            }
-        }
-        return readBundledBotPlaceholderPng();
-    }
-
-    private byte[] readBundledBotPlaceholderPng() {
-        try (InputStream in = Thread.currentThread().getContextClassLoader().getResourceAsStream("gartic-bot-drawing-placeholder.png")) {
-            if (in == null) {
-                return null;
-            }
-            byte[] bytes = in.readAllBytes();
-            if (bytes.length > GARTIC_IMAGE_MAX_BYTES || !looksLikePng(bytes)) {
-                return null;
-            }
-            return bytes;
-        } catch (Exception e) {
-            log.warn("Bundled gartic-bot-drawing-placeholder.png not readable: {}", e.getMessage());
+        String localDataUrl = botDrawLocalPngDataUrl(phrase);
+        if (localDataUrl == null) {
             return null;
         }
+        String ref = garticDrawingAssetStorage.saveDataUrlAsAssetRef(gameId, localDataUrl, GARTIC_IMAGE_MAX_BYTES);
+        gameTraceLogger.trace(gameId, "BOT_DRAW_RESULT kind=LOCAL_IMAGE ref=" + ref);
+        return ref;
     }
 
-    private static boolean looksLikePng(byte[] b) {
-        if (b == null || b.length < PNG_MAGIC.length) {
+    private void scheduleBotDrawingStep(UUID gameId, GamePlayer botPlayer, int stepNumber, String phrase) {
+        BotActor actor = toBotActor(botPlayer);
+        int delaySec = ThreadLocalRandom.current().nextInt(1, 4);
+        String key = "game:" + gameId + ":bot:" + actor.gamePlayerId() + ":step:" + stepNumber + ":draw";
+        Runnable scheduleWork = () -> {
+            gameTraceLogger.trace(gameId, "BOT_STEP_SCHEDULED bot=" + actor.name() + "(" + actor.participantId() + ")"
+                    + " step=" + stepNumber + " type=DRAWING delaySec=" + delaySec);
+            gameTimerService.schedule(key, delaySec, () -> executeBotDrawingStep(gameId, actor, stepNumber, phrase));
+        };
+        if (scheduleBotAfterCommit && TransactionSynchronizationManager.isActualTransactionActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    scheduleWork.run();
+                }
+            });
+        } else {
+            scheduleWork.run();
+        }
+    }
+
+    private void executeBotDrawingStep(UUID gameId, BotActor actor, int stepNumber, String phrase) {
+        long startedAtMs = System.currentTimeMillis();
+        gameTraceLogger.trace(gameId, "BOT_DRAW_GENERATION_STARTED bot=" + actor.name() + "(" + actor.participantId() + ")"
+                + " step=" + stepNumber);
+        String content = null;
+        try {
+            content = botDraw(gameId, phrase);
+        } catch (Exception e) {
+            log.warn("Bot draw generation failed: gameId={}, botPlayerId={}, step={}, reason={}",
+                    gameId, actor.gamePlayerId(), stepNumber, e.getMessage());
+        }
+        long generationMs = System.currentTimeMillis() - startedAtMs;
+        if (!isGarticStepOpen(gameId, stepNumber)) {
+            gameTraceLogger.trace(gameId, "BOT_DRAW_STILL_GENERATING_ROUND_FINISHED bot=" + actor.name()
+                    + "(" + actor.participantId() + ") step=" + stepNumber + " generationMs=" + generationMs);
+            return;
+        }
+        if (content == null || content.isBlank()) {
+            gameTraceLogger.trace(gameId, "BOT_DRAW_RESULT kind=NO_IMAGE step=" + stepNumber + " generationMs=" + generationMs);
+            return;
+        }
+        executeBotStepWithRetry(gameId, actor, stepNumber, "DRAWING", content, 1);
+    }
+
+    private boolean isGarticStepOpen(UUID gameId, int stepNumber) {
+        GameSession game = gameSessionRepository.findById(gameId).orElse(null);
+        if (game == null || !"IN_PROGRESS".equals(game.getStatus()) || !"GARTIC_PHONE".equals(game.getGameType())) {
             return false;
         }
-        for (int i = 0; i < PNG_MAGIC.length; i++) {
-            if (b[i] != PNG_MAGIC[i]) {
-                return false;
-            }
+        List<GamePlayer> players = orderedPlayers(gamePlayerRepository.findByGameId(gameId));
+        if (players.isEmpty()) {
+            return false;
         }
-        return true;
+        int currentStep = detectCurrentGarticStep(gameId, players.size());
+        return currentStep == stepNumber;
+    }
+
+    /** Creates a richer non-text PNG when external draw model is unavailable. */
+    private String botDrawLocalPngDataUrl(String phrase) {
+        try {
+            int width = 768;
+            int height = 512;
+            BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+            Graphics2D g = image.createGraphics();
+            g.setColor(Color.WHITE);
+            g.fillRect(0, 0, width, height);
+
+            int seed = Math.abs(Objects.hash(phrase, System.nanoTime(), UUID.randomUUID()));
+            int bgR = 210 + (seed % 45);
+            int bgG = 210 + ((seed / 7) % 45);
+            int bgB = 210 + ((seed / 17) % 45);
+            g.setColor(new Color(bgR, bgG, bgB));
+            g.fillRect(0, 0, width, height);
+
+            g.setStroke(new BasicStroke(6f));
+            for (int i = 0; i < 7; i++) {
+                int h = seed + i * 97;
+                int r = 40 + Math.abs(h % 180);
+                int gr = 40 + Math.abs((h / 3) % 180);
+                int b = 40 + Math.abs((h / 5) % 180);
+                g.setColor(new Color(r, gr, b));
+                int x = 40 + Math.abs((h / 11) % (width - 140));
+                int y = 40 + Math.abs((h / 13) % (height - 140));
+                int w = 60 + Math.abs((h / 17) % 220);
+                int hh = 60 + Math.abs((h / 19) % 220);
+                switch (i % 3) {
+                    case 0 -> g.drawOval(x, y, w, hh);
+                    case 1 -> g.drawRect(x, y, w, hh);
+                    default -> g.drawRoundRect(x, y, w, hh, 30, 30);
+                }
+            }
+
+            g.setColor(new Color(25, 25, 25));
+            g.setStroke(new BasicStroke(3f));
+            g.drawLine(40, height - 70, width - 40, height - 70);
+            g.drawLine(60, 50, width - 60, 50);
+            g.dispose();
+
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            ImageIO.write(image, "png", baos);
+            String b64 = Base64.getEncoder().encodeToString(baos.toByteArray());
+            return "data:image/png;base64," + b64;
+        } catch (Exception e) {
+            log.warn("Bot local draw fallback failed: {}", e.getMessage());
+            return null;
+        }
     }
 
     private String botQuiplashAnswer(String promptText) {
@@ -1136,7 +1239,7 @@ public class GameService {
             return content == null || content.isBlank() ? DEFAULT_TEXT : content;
         }
         if (content == null || content.isBlank()) {
-            return saveDrawingFallbackAssetRef(gameId).assetRef();
+            return garticDrawingAssetStorage.saveDataUrlAsAssetRef(gameId, WHITE_PNG_BASE64, GARTIC_IMAGE_MAX_BYTES);
         }
         if (GarticDrawingAssetStorage.isAssetRef(content)) {
             UUID id = UUID.fromString(content.substring(GarticDrawingAssetStorage.ASSET_PREFIX.length()));

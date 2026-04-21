@@ -17,6 +17,7 @@ PROVIDER = os.getenv("INFERENCE_PROVIDER", "local").lower()
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "llava:7b")
 OLLAMA_TEXT_MODEL = os.getenv("OLLAMA_TEXT_MODEL", OLLAMA_VISION_MODEL)
+OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
 LOCAL_DRAW_URL = os.getenv(
     "LOCAL_DRAW_URL", "http://host.docker.internal:7860/sdapi/v1/txt2img"
 ).strip()
@@ -105,6 +106,7 @@ def _ollama_guess(image_base64: str) -> Optional[str]:
             "prompt": "Опиши картинку коротко по-русски (2-5 слов).",
             "images": [image_base64.split(",")[-1]],
             "stream": False,
+            "keep_alive": OLLAMA_KEEP_ALIVE,
         }
         resp = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=30)
         resp.raise_for_status()
@@ -121,6 +123,7 @@ def _ollama_text(prompt: str) -> Optional[str]:
             "model": OLLAMA_TEXT_MODEL,
             "prompt": prompt,
             "stream": False,
+            "keep_alive": OLLAMA_KEEP_ALIVE,
         }
         resp = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=30)
         resp.raise_for_status()

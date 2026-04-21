@@ -59,5 +59,3 @@ games:
     dir: ${GAMES_TRACE_DIR:/tmp/game-traces}
   gartic-assets:
     dir: ${GARTIC_ASSETS_DIR:./gartic-assets}
-  # Optional override: filesystem path or classpath:... (see GameService). If unset, bundled gartic-bot-drawing-placeholder.png is used.
-  gartic-bot-drawing-placeholder: ${GARTIC_BOT_DRAWING_PLACEHOLDER:}

@@ -35,5 +35,4 @@ games:
     enabled: false
   gartic-assets:
     dir: ./build/gartic-assets-test
-  gartic-bot-drawing-placeholder: classpath:test-gartic-bot-placeholder.png
 

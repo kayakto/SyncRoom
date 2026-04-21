@@ -68,6 +68,7 @@ services:
       INFERENCE_PROVIDER: ${INFERENCE_PROVIDER:-local}
       OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
       OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-llava:7b}
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
       LOCAL_DRAW_URL: ${LOCAL_DRAW_URL:-http://host.docker.internal:7860/sdapi/v1/txt2img}
       LOCAL_GUESS_URL: ${LOCAL_GUESS_URL:-}
     ports:
