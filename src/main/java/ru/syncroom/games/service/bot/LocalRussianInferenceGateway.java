@@ -1,7 +1,7 @@
 package ru.syncroom.games.service.bot;
 
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -20,11 +20,14 @@ import java.util.Optional;
  * - POST drawUrl  body {"prompt":"..."}      -> {"imageBase64":"data:image/png;base64,..."}
  */
 @Component
-@RequiredArgsConstructor
 @Slf4j
 public class LocalRussianInferenceGateway implements GarticInferenceGateway {
 
     private final RestTemplate restTemplate;
+
+    public LocalRussianInferenceGateway(@Qualifier("inferenceRestTemplate") RestTemplate restTemplate) {
+        this.restTemplate = restTemplate;
+    }
 
     @Value("${bots.inference.enabled:false}")
     private boolean enabled;

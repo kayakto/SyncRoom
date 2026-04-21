@@ -23,6 +23,10 @@ LOCAL_DRAW_URL = os.getenv(
 ).strip()
 LOCAL_GUESS_URL = os.getenv("LOCAL_GUESS_URL", "").strip()
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", "/generated")
+LOCAL_DRAW_STEPS = int(os.getenv("LOCAL_DRAW_STEPS", "12"))
+LOCAL_DRAW_CFG_SCALE = float(os.getenv("LOCAL_DRAW_CFG_SCALE", "6.5"))
+LOCAL_DRAW_WIDTH = int(os.getenv("LOCAL_DRAW_WIDTH", "512"))
+LOCAL_DRAW_HEIGHT = int(os.getenv("LOCAL_DRAW_HEIGHT", "512"))
 
 
 class DrawRequest(BaseModel):
@@ -149,11 +153,11 @@ def _local_draw(prompt: str) -> Optional[str]:
         payload = {
             "prompt": _human_style_prompt(prompt),
             "negative_prompt": "photorealistic, realistic shading, high detail, 3d render, text, watermark",
-            # Keep draw latency below game timeout (90s) on CPU hosts.
-            "steps": 6,
-            "cfg_scale": 5,
-            "width": 320,
-            "height": 320,
+            # Quality/speed tradeoff is configurable via env.
+            "steps": LOCAL_DRAW_STEPS,
+            "cfg_scale": LOCAL_DRAW_CFG_SCALE,
+            "width": LOCAL_DRAW_WIDTH,
+            "height": LOCAL_DRAW_HEIGHT,
         }
         headers = {
             "Content-Type": "application/json",
@@ -203,6 +207,8 @@ def health() -> dict:
 
 @app.post("/api/draw", response_model=DrawResponse)
 def draw(req: DrawRequest) -> DrawResponse:
+    _p = (req.prompt or "")[:120]
+    print(f"[inference-mock] /api/draw prompt={_p!r}", flush=True)
     if PROVIDER in ("local", "ollama", "mock"):
         image = _local_draw(req.prompt)
         if image:

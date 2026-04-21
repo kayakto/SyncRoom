@@ -4,10 +4,14 @@ services:
       INFERENCE_PROVIDER: local
       OLLAMA_URL: http://ollama:11434
       OLLAMA_VISION_MODEL: llava:7b
-      OLLAMA_TEXT_MODEL: llava:7b
+      OLLAMA_TEXT_MODEL: qwen2.5:1.5b
       OLLAMA_KEEP_ALIVE: 30m
       LOCAL_DRAW_URL: http://local-draw:7860/sdapi/v1/txt2img
       LOCAL_GUESS_URL: ""
+      LOCAL_DRAW_STEPS: 14
+      LOCAL_DRAW_CFG_SCALE: 6.5
+      LOCAL_DRAW_WIDTH: 512
+      LOCAL_DRAW_HEIGHT: 512
     depends_on:
       ollama:
         condition: service_started
@@ -38,6 +42,7 @@ services:
       - |
         sleep 8
         ollama pull llava:7b
+        ollama pull qwen2.5:1.5b
     environment:
       OLLAMA_HOST: http://ollama:11434
     networks:

@@ -61,16 +61,22 @@ public class GameService {
     private static final int MIN_READY_PLAYERS_TO_START = 3;
     private static final int LOBBY_DISCONNECT_UNREADY_DELAY_SEC = 10;
     private static final int TOTAL_ROUNDS = 3;
-    private static final int GARTIC_TEXT_TIMEOUT_SEC = 60;
-    private static final int GARTIC_DRAW_TIMEOUT_SEC = 90;
     private static final int GARTIC_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
     private static final int BOT_STEP_MAX_RETRIES = 3;
-    private static final int BOT_DRAW_MODEL_TIMEOUT_SEC = 3;
     private static final String DEFAULT_TEXT = "...";
     private static final String WHITE_PNG_BASE64 = "data:image/png;base64,"
             + "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMBAAZ9l1cAAAAASUVORK5CYII=";
     @Value("${games.bot.schedule-after-commit:true}")
     private boolean scheduleBotAfterCommit;
+
+    @Value("${games.gartic.text-timeout-sec:60}")
+    private int garticTextTimeoutSec;
+
+    @Value("${games.gartic.draw-timeout-sec:180}")
+    private int garticDrawTimeoutSec;
+
+    @Value("${games.bot.draw-model-timeout-sec:150}")
+    private int botDrawModelTimeoutSec;
 
     private final Map<UUID, Object> garticLocks = new ConcurrentHashMap<>();
 
@@ -785,7 +791,7 @@ public class GameService {
                 String phrase = garticStepRepository.findByChainIdAndStepNumber(chain.getId(), stepNumber - 1)
                         .map(GarticStep::getContent).orElse(DEFAULT_TEXT);
                 payload.put("phrase", phrase);
-                payload.put("timeLimit", GARTIC_DRAW_TIMEOUT_SEC);
+                payload.put("timeLimit", garticDrawTimeoutSec);
                 if (isHuman(player)) {
                     eventSender.sendToPlayer(gameId, player.getUser().getId(), "STEP_DRAW", payload);
                 } else {
@@ -793,7 +799,7 @@ public class GameService {
                 }
             } else if (stepNumber == 1) {
                 payload.put("stepNumber", 1);
-                payload.put("timeLimit", GARTIC_TEXT_TIMEOUT_SEC);
+                payload.put("timeLimit", garticTextTimeoutSec);
                 if (isHuman(player)) {
                     eventSender.sendToPlayer(gameId, player.getUser().getId(), "STEP_WRITE", payload);
                 } else {
@@ -804,7 +810,7 @@ public class GameService {
                         .map(GarticStep::getContent)
                         .orElseGet(() -> garticDrawingAssetStorage.saveDataUrlAsAssetRef(gameId, WHITE_PNG_BASE64, GARTIC_IMAGE_MAX_BYTES));
                 putDrawingWsFields(gameId, payload, storedDrawing);
-                payload.put("timeLimit", GARTIC_TEXT_TIMEOUT_SEC);
+                payload.put("timeLimit", garticTextTimeoutSec);
                 if (isHuman(player)) {
                     eventSender.sendToPlayer(gameId, player.getUser().getId(), "STEP_GUESS", payload);
                 } else {
@@ -902,7 +908,7 @@ public class GameService {
     }
 
     private void scheduleGarticTimeout(UUID gameId, int stepNumber) {
-        int timeout = "DRAWING".equals(expectedGarticType(stepNumber)) ? GARTIC_DRAW_TIMEOUT_SEC : GARTIC_TEXT_TIMEOUT_SEC;
+        int timeout = "DRAWING".equals(expectedGarticType(stepNumber)) ? garticDrawTimeoutSec : garticTextTimeoutSec;
         gameTimerService.schedule(garticStepKey(gameId, stepNumber), timeout, () -> onGarticStepTimeout(gameId, stepNumber));
     }
 
@@ -1088,9 +1094,10 @@ public class GameService {
     }
 
     private String botDraw(UUID gameId, String phrase) {
+        gameTraceLogger.trace(gameId, "BOT_DRAW_MODEL_REQUEST timeoutSec=" + botDrawModelTimeoutSec);
         Optional<String> generated = CompletableFuture
                 .supplyAsync(() -> garticInferenceGateway.draw(phrase))
-                .completeOnTimeout(Optional.empty(), BOT_DRAW_MODEL_TIMEOUT_SEC, TimeUnit.SECONDS)
+                .completeOnTimeout(Optional.empty(), botDrawModelTimeoutSec, TimeUnit.SECONDS)
                 .exceptionally(ex -> Optional.empty())
                 .join();
         if (generated.isPresent() && !generated.get().isBlank()) {
@@ -1098,6 +1105,7 @@ public class GameService {
             gameTraceLogger.trace(gameId, "BOT_DRAW_RESULT kind=AI_IMAGE ref=" + ref);
             return ref;
         }
+        gameTraceLogger.trace(gameId, "BOT_DRAW_MODEL_EMPTY_OR_TIMEOUT");
         String localDataUrl = botDrawLocalPngDataUrl(phrase);
         if (localDataUrl == null) {
             return null;
@@ -1165,7 +1173,7 @@ public class GameService {
         return currentStep == stepNumber;
     }
 
-    /** Creates a richer non-text PNG when external draw model is unavailable. */
+    /** Creates a simple recognizable doodle when external draw model is unavailable. */
     private String botDrawLocalPngDataUrl(String phrase) {
         try {
             int width = 768;
@@ -1174,36 +1182,25 @@ public class GameService {
             Graphics2D g = image.createGraphics();
             g.setColor(Color.WHITE);
             g.fillRect(0, 0, width, height);
-
-            int seed = Math.abs(Objects.hash(phrase, System.nanoTime(), UUID.randomUUID()));
-            int bgR = 210 + (seed % 45);
-            int bgG = 210 + ((seed / 7) % 45);
-            int bgB = 210 + ((seed / 17) % 45);
-            g.setColor(new Color(bgR, bgG, bgB));
-            g.fillRect(0, 0, width, height);
-
+            String p = phrase == null ? "" : phrase.toLowerCase(Locale.ROOT);
             g.setStroke(new BasicStroke(6f));
-            for (int i = 0; i < 7; i++) {
-                int h = seed + i * 97;
-                int r = 40 + Math.abs(h % 180);
-                int gr = 40 + Math.abs((h / 3) % 180);
-                int b = 40 + Math.abs((h / 5) % 180);
-                g.setColor(new Color(r, gr, b));
-                int x = 40 + Math.abs((h / 11) % (width - 140));
-                int y = 40 + Math.abs((h / 13) % (height - 140));
-                int w = 60 + Math.abs((h / 17) % 220);
-                int hh = 60 + Math.abs((h / 19) % 220);
-                switch (i % 3) {
-                    case 0 -> g.drawOval(x, y, w, hh);
-                    case 1 -> g.drawRect(x, y, w, hh);
-                    default -> g.drawRoundRect(x, y, w, hh, 30, 30);
-                }
-            }
+            g.setColor(new Color(30, 30, 30));
 
-            g.setColor(new Color(25, 25, 25));
-            g.setStroke(new BasicStroke(3f));
-            g.drawLine(40, height - 70, width - 40, height - 70);
-            g.drawLine(60, 50, width - 60, 50);
+            if (containsAny(p, "кот", "cat")) {
+                drawCat(g);
+            } else if (containsAny(p, "пицц", "pizza")) {
+                drawPizza(g);
+            } else if (containsAny(p, "ножниц", "scissor")) {
+                drawScissors(g);
+            } else if (containsAny(p, "огур", "cucumber")) {
+                drawCucumber(g);
+            } else if (containsAny(p, "космос", "space", "астро")) {
+                drawSpace(g);
+            } else if (containsAny(p, "диноз", "dino")) {
+                drawDino(g);
+            } else {
+                drawGenericScene(g, p);
+            }
             g.dispose();
 
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -1214,6 +1211,91 @@ public class GameService {
             log.warn("Bot local draw fallback failed: {}", e.getMessage());
             return null;
         }
+    }
+
+    private static boolean containsAny(String text, String... needles) {
+        for (String n : needles) {
+            if (text.contains(n)) return true;
+        }
+        return false;
+    }
+
+    private static void drawCat(Graphics2D g) {
+        g.drawOval(250, 150, 260, 220);
+        g.drawLine(300, 150, 340, 95);
+        g.drawLine(340, 95, 365, 155);
+        g.drawLine(420, 155, 455, 95);
+        g.drawLine(455, 95, 485, 155);
+        g.fillOval(330, 230, 16, 16);
+        g.fillOval(420, 230, 16, 16);
+        g.drawArc(360, 260, 40, 30, 200, 140);
+        g.drawLine(290, 260, 350, 250);
+        g.drawLine(290, 285, 350, 275);
+        g.drawLine(410, 250, 470, 260);
+        g.drawLine(410, 275, 470, 285);
+    }
+
+    private static void drawPizza(Graphics2D g) {
+        g.drawLine(220, 120, 560, 280);
+        g.drawLine(560, 280, 280, 360);
+        g.drawLine(280, 360, 220, 120);
+        g.drawArc(205, 95, 370, 210, 20, 120);
+        g.drawOval(360, 220, 30, 30);
+        g.drawOval(440, 250, 30, 30);
+        g.drawOval(320, 290, 26, 26);
+        g.drawOval(400, 300, 24, 24);
+    }
+
+    private static void drawScissors(Graphics2D g) {
+        g.drawOval(220, 260, 100, 100);
+        g.drawOval(310, 260, 100, 100);
+        g.drawLine(350, 300, 560, 170);
+        g.drawLine(350, 320, 560, 390);
+        g.drawLine(500, 210, 610, 130);
+        g.drawLine(500, 350, 610, 430);
+    }
+
+    private static void drawCucumber(Graphics2D g) {
+        g.drawRoundRect(220, 200, 340, 110, 70, 70);
+        g.drawOval(240, 225, 26, 26);
+        g.drawOval(300, 235, 22, 22);
+        g.drawOval(360, 222, 24, 24);
+        g.drawOval(430, 236, 22, 22);
+        g.drawOval(500, 224, 24, 24);
+    }
+
+    private static void drawSpace(Graphics2D g) {
+        g.drawOval(320, 170, 140, 180);
+        g.drawRect(370, 220, 40, 70);
+        g.drawLine(280, 340, 320, 300);
+        g.drawLine(460, 300, 500, 340);
+        g.drawOval(140, 90, 120, 70);
+        g.drawOval(550, 110, 140, 80);
+        g.fillOval(170, 120, 8, 8);
+        g.fillOval(600, 130, 8, 8);
+    }
+
+    private static void drawDino(Graphics2D g) {
+        g.drawOval(250, 220, 280, 140);
+        g.drawOval(470, 170, 120, 110);
+        g.drawLine(250, 270, 180, 240);
+        g.drawLine(300, 350, 300, 420);
+        g.drawLine(430, 350, 430, 420);
+        g.fillOval(545, 215, 10, 10);
+        g.drawLine(360, 210, 380, 180);
+        g.drawLine(390, 210, 410, 182);
+        g.drawLine(420, 212, 440, 184);
+    }
+
+    private static void drawGenericScene(Graphics2D g, String phrase) {
+        int seed = Math.abs(Objects.hash(phrase, System.nanoTime(), UUID.randomUUID()));
+        int shift = seed % 80;
+        g.drawLine(80, 390, 690, 390);
+        g.drawOval(130 + shift, 240, 100 + (seed % 40), 100 + (seed % 40));
+        g.drawRect(300 + (shift / 2), 250, 130 + (seed % 40), 100 + ((seed / 7) % 30));
+        g.drawRoundRect(500 - (shift / 3), 230, 110 + ((seed / 11) % 35), 120 + ((seed / 13) % 30), 30, 30);
+        g.drawLine(110 + shift, 210, 180 + shift, 150 + (seed % 40));
+        g.drawLine(620 - shift, 220, 660 - shift, 160 + ((seed / 5) % 40));
     }
 
     private String botQuiplashAnswer(String promptText) {

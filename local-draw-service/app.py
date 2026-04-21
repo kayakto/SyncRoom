@@ -17,6 +17,7 @@ MODEL_ID = os.getenv("SD_MODEL_ID", "segmind/tiny-sd")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DTYPE = torch.float16 if DEVICE == "cuda" else torch.float32
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", "/generated")
+PREWARM_ON_START = os.getenv("PREWARM_ON_START", "true").lower() in ("1", "true", "yes", "on")
 
 app = FastAPI(title="SyncRoom Local Draw Service")
 
@@ -56,6 +57,26 @@ def get_pipe() -> StableDiffusionPipeline:
                 pipe.set_progress_bar_config(disable=True)
                 _pipe = pipe
     return _pipe
+
+
+@app.on_event("startup")
+def startup_prewarm() -> None:
+    if not PREWARM_ON_START:
+        return
+    try:
+        pipe = get_pipe()
+        # Warm up once so first user request does not pay model startup cost.
+        _ = pipe(
+            prompt="simple doodle",
+            num_inference_steps=1,
+            guidance_scale=1.0,
+            width=256,
+            height=256,
+        ).images[0]
+        print("[local-draw] prewarm complete", flush=True)
+    except Exception:
+        traceback.print_exc()
+        print("[local-draw] prewarm failed; service will retry on first request", flush=True)
 
 
 def image_to_base64(image: Image.Image) -> str:

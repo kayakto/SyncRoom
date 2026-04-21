@@ -43,6 +43,8 @@ srs:
 bots:
   inference:
     enabled: ${BOTS_INFERENCE_ENABLED:false}
+    connect-timeout-ms: ${BOTS_INFERENCE_CONNECT_TIMEOUT_MS:15000}
+    read-timeout-ms: ${BOTS_INFERENCE_READ_TIMEOUT_MS:120000}
     # Local or free Russian inference adapter endpoints.
     # Example:
     # draw-url: http://127.0.0.1:8091/api/draw
@@ -54,8 +56,13 @@ bots:
 games:
   bot:
     schedule-after-commit: ${GAMES_BOT_SCHEDULE_AFTER_COMMIT:true}
+    # Temporary tuning knobs while validating image generation quality.
+    draw-model-timeout-sec: ${GAMES_BOT_DRAW_MODEL_TIMEOUT_SEC:150}
   trace:
     enabled: ${GAMES_TRACE_ENABLED:true}
     dir: ${GAMES_TRACE_DIR:/tmp/game-traces}
   gartic-assets:
     dir: ${GARTIC_ASSETS_DIR:./gartic-assets}
+  gartic:
+    text-timeout-sec: ${GAMES_GARTIC_TEXT_TIMEOUT_SEC:60}
+    draw-timeout-sec: ${GAMES_GARTIC_DRAW_TIMEOUT_SEC:180}
