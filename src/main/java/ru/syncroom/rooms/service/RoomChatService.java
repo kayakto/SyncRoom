@@ -71,6 +71,23 @@ public class RoomChatService {
         return dto;
     }
 
+    @Transactional
+    public ChatMessageResponse sendSystemBotMessage(UUID roomId, UUID botUserId, String rawText) {
+        if (!roomRepository.existsById(roomId)) {
+            throw new NotFoundException("Room not found");
+        }
+        User user = userRepository.findById(botUserId).orElseThrow(() -> new NotFoundException("User not found"));
+        String text = validateText(rawText);
+        RoomMessage saved = roomMessageRepository.save(RoomMessage.builder()
+                .room(roomRepository.getReferenceById(roomId))
+                .user(user)
+                .text(text)
+                .build());
+        ChatMessageResponse dto = toResponse(saved);
+        messagingTemplate.convertAndSend(topic(roomId), dto);
+        return dto;
+    }
+
     private void requireParticipant(UUID roomId, UUID userId) {
         if (!roomParticipantRepository.existsByRoomIdAndUserId(roomId, userId)) {
             throw new BadRequestException("User is not a participant of this room");
@@ -89,10 +106,12 @@ public class RoomChatService {
     }
 
     private ChatMessageResponse toResponse(RoomMessage m) {
+        boolean isBot = m.getUser().getEmail() != null && m.getUser().getEmail().endsWith("@syncroom.local");
         return ChatMessageResponse.builder()
                 .id(m.getId().toString())
                 .userId(m.getUser().getId().toString())
                 .userName(m.getUser().getName())
+                .isBot(isBot)
                 .text(m.getText())
                 .createdAt(m.getCreatedAt())
                 .build();

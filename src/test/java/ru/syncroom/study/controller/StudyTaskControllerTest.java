@@ -186,6 +186,14 @@ class StudyTaskControllerTest {
                         .content("{\"text\": \"B\"}"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.sortOrder").value(1));
+
+        verify(messagingTemplate, times(2)).convertAndSend(
+                eq("/topic/room/" + room.getId() + "/tasks"),
+                argThat((StudyTaskWsEvent ev) ->
+                        ev.getType() == StudyTaskWsEventType.TASK_CREATED
+                                && ((Map<?, ?>) ev.getPayload()).containsKey("ownerId")
+                                && ((Map<?, ?>) ev.getPayload()).containsKey("ownerName")
+                                && ((Map<?, ?>) ev.getPayload()).containsKey("likedByMe")));
     }
 
     @Test
@@ -210,6 +218,14 @@ class StudyTaskControllerTest {
                 .andExpect(jsonPath("$.text").value("New"))
                 .andExpect(jsonPath("$.isDone").value(true))
                 .andExpect(jsonPath("$.sortOrder").value(5));
+
+        verify(messagingTemplate).convertAndSend(
+                eq("/topic/room/" + room.getId() + "/tasks"),
+                argThat((StudyTaskWsEvent ev) ->
+                        ev.getType() == StudyTaskWsEventType.TASK_UPDATED
+                                && ((Map<?, ?>) ev.getPayload()).get("taskId").equals(task.getId().toString())
+                                && ((Map<?, ?>) ev.getPayload()).get("ownerId").equals(user.getId().toString())
+                                && ((Map<?, ?>) ev.getPayload()).get("ownerName").equals(user.getName())));
     }
 
     @Test
@@ -229,6 +245,13 @@ class StudyTaskControllerTest {
         mockMvc.perform(delete("/api/rooms/{roomId}/tasks/{taskId}", room.getId(), task.getId())
                         .header("Authorization", auth()))
                 .andExpect(status().isNoContent());
+
+        verify(messagingTemplate).convertAndSend(
+                eq("/topic/room/" + room.getId() + "/tasks"),
+                argThat((StudyTaskWsEvent ev) ->
+                        ev.getType() == StudyTaskWsEventType.TASK_DELETED
+                                && ((Map<?, ?>) ev.getPayload()).get("taskId").equals(task.getId().toString())
+                                && ((Map<?, ?>) ev.getPayload()).get("ownerId").equals(user.getId().toString())));
     }
 
     @Test

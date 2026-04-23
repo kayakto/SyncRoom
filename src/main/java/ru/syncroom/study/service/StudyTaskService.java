@@ -96,6 +96,7 @@ public class StudyTaskService {
                     .sortOrder(t.getSortOrder())
                     .ownerId(owner.getId().toString())
                     .ownerName(owner.getName())
+                    .isBot(owner.getEmail() != null && owner.getEmail().equalsIgnoreCase("motivbot@syncroom.local"))
                     .likeCount(likes)
                     .likedByMe(likedByMe.contains(t.getId()))
                     .build();
@@ -209,7 +210,18 @@ public class StudyTaskService {
                 .sortOrder(nextOrder)
                 .build();
 
-        return toResponse(taskRepository.save(task));
+        StudyTask saved = taskRepository.save(task);
+        publishTaskEvent(roomId, StudyTaskWsEventType.TASK_CREATED, Map.of(
+                "taskId", saved.getId().toString(),
+                "text", saved.getText(),
+                "isDone", Boolean.TRUE.equals(saved.getIsDone()),
+                "sortOrder", saved.getSortOrder(),
+                "ownerId", user.getId().toString(),
+                "ownerName", user.getName(),
+                "likeCount", 0L,
+                "likedByMe", false
+        ));
+        return toResponse(saved);
     }
 
     @Transactional
@@ -227,13 +239,27 @@ public class StudyTaskService {
             task.setSortOrder(request.getSortOrder());
         }
 
-        return toResponse(taskRepository.save(task));
+        StudyTask updated = taskRepository.save(task);
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("taskId", updated.getId().toString());
+        payload.put("text", updated.getText());
+        payload.put("isDone", Boolean.TRUE.equals(updated.getIsDone()));
+        payload.put("sortOrder", updated.getSortOrder());
+        payload.put("ownerId", updated.getUser().getId().toString());
+        payload.put("ownerName", updated.getUser().getName());
+        publishTaskEvent(roomId, StudyTaskWsEventType.TASK_UPDATED, payload);
+        return toResponse(updated);
     }
 
     @Transactional
     public void delete(UUID roomId, UUID userId, UUID taskId) {
         StudyTask task = taskRepository.findByIdAndUserIdAndRoomId(taskId, userId, roomId)
                 .orElseThrow(() -> new NotFoundException("Task not found"));
+        UUID ownerId = task.getUser().getId();
         taskRepository.delete(task);
+        publishTaskEvent(roomId, StudyTaskWsEventType.TASK_DELETED, Map.of(
+                "taskId", taskId.toString(),
+                "ownerId", ownerId.toString()
+        ));
     }
 }

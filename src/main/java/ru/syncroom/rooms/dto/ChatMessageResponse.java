@@ -19,6 +19,7 @@ public class ChatMessageResponse {
     private String userId;
     @JsonProperty("userName")
     private String userName;
+    private Boolean isBot;
     private String text;
     private OffsetDateTime createdAt;
 }

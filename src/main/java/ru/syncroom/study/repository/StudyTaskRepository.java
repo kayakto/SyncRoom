@@ -22,5 +22,7 @@ public interface StudyTaskRepository extends JpaRepository<StudyTask, UUID> {
     long countByUser_IdAndRoom_Id(UUID userId, UUID roomId);
 
     long countByUser_IdAndRoom_IdAndIsDoneTrue(UUID userId, UUID roomId);
+
+    void deleteByRoom_IdAndUser_Id(UUID roomId, UUID userId);
 }
 

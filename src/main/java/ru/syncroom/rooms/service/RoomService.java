@@ -17,6 +17,7 @@ import ru.syncroom.rooms.dto.SeatDto;
 import ru.syncroom.rooms.repository.RoomParticipantRepository;
 import ru.syncroom.rooms.repository.RoomRepository;
 import ru.syncroom.rooms.repository.SeatRepository;
+import ru.syncroom.study.repository.StudyTaskRepository;
 import ru.syncroom.games.service.GameService;
 import ru.syncroom.rooms.ws.RoomEvent;
 import ru.syncroom.rooms.ws.RoomEventType;
@@ -37,6 +38,7 @@ public class RoomService {
     private final SeatRepository seatRepository;
     private final SeatService seatService;
     private final GameService gameService;
+    private final StudyTaskRepository studyTaskRepository;
     private final SimpMessagingTemplate messagingTemplate;
 
     // ─── Helpers ────────────────────────────────────────────────────────────
@@ -175,6 +177,9 @@ public class RoomService {
         seatService.releaseUserSeat(roomId, userId);
 
         gameService.onParticipantLeftRoom(roomId, userId);
+
+        // После выхода из комнаты пользователь не должен оставлять свои цели видимыми в комнате.
+        studyTaskRepository.deleteByRoom_IdAndUser_Id(roomId, userId);
 
         participantRepository.deleteByRoomIdAndUserId(roomId, userId);
 

@@ -134,8 +134,26 @@
     <button onclick="subPomodoro()">👂 Subscribe /pomodoro</button>
   </div>
 
+  <!-- ─── TASKS ─────────────────────────────────────────────────────────── -->
+  <h3>7. Tasks</h3>
+  <div class="grid2">
+    <div>
+      <label>Task text (POST /tasks)</label>
+      <input id="taskText" value="Моя тестовая цель" placeholder="Текст задачи" />
+    </div>
+    <div>
+      <label>Room ID берётся из поля «Room ID» выше</label>
+      <input value="Используется roomId из блока «Комната»" readonly />
+    </div>
+  </div>
+  <div class="row">
+    <button onclick="subTasks()">👂 Subscribe /tasks</button>
+    <button class="green" onclick="createTask()">✅ POST /tasks</button>
+    <button onclick="getAllTasks()">📋 GET /tasks/all</button>
+  </div>
+
   <!-- ─── ИГРЫ (QUIPLASH + GARTIC) ──────────────────────────────────────── -->
-  <h3>7. Игры (Quiplash + Gartic Phone)</h3>
+  <h3>8. Игры (Quiplash + Gartic Phone)</h3>
   <div class="grid2">
     <div>
       <label>Room ID (для создания игры)</label>
@@ -207,7 +225,7 @@
   </div>
 
   <!-- ─── ЧАТ КОМНАТЫ ───────────────────────────────────────────────────── -->
-  <h3>8. Чат комнаты</h3>
+  <h3>9. Чат комнаты</h3>
   <div class="grid2">
     <div>
       <label>Текст сообщения (REST + WS)</label>
@@ -225,7 +243,7 @@
   </div>
 
   <!-- ─── ЛОГ ───────────────────────────────────────────────────────────── -->
-  <h3>9. Лог</h3>
+  <h3>10. Лог</h3>
   <button class="sm" onclick="clearLog()">Очистить</button>
   <div id="log"></div>
 
@@ -237,6 +255,7 @@
     let seatSub = null;
     let projectorSub = null;
     let pomodoroSub = null;
+    let tasksSub = null;
     let gameSub = null;
     let gameUserSub = null;
     let chatSub = null;
@@ -335,6 +354,20 @@
       log('Используй POST /pomodoro/start/pause/resume/skip/stop, чтобы увидеть события POMODORO_*.', 'info');
     }
 
+    function subTasks() {
+      if (!chk()) return;
+      const r = rid();
+      if (!r) { log('⚠️ Введи Room ID', 'err'); return; }
+      if (tasksSub) tasksSub.unsubscribe();
+      const dest = '/topic/room/' + r + '/tasks';
+      tasksSub = stompClient.subscribe(dest, frame => {
+        const e = parseEvent(frame.body);
+        log('✅ [' + e.type + '] ' + JSON.stringify(e.payload, null, 2), 'in');
+      });
+      log('👂 Subscribed: ' + dest, 'out');
+      log('Используй POST /tasks, like/unlike или помодоро+бота для событий TASK_* / BOT_GOAL_SUGGESTED.', 'info');
+    }
+
     function subChat() {
       if (!chk()) return;
       const r = rid();
@@ -371,6 +404,34 @@
       const payload = { text };
       log('WS SEND ' + dest + ': ' + JSON.stringify(payload), 'out');
       stompClient.send(dest, {}, JSON.stringify(payload));
+    }
+
+    function createTask() {
+      const r = rid();
+      if (!r) { log('⚠️ Введи Room ID', 'err'); return; }
+      const text = $('taskText').value.trim();
+      if (!text) { log('⚠️ Введи текст задачи', 'err'); return; }
+      const url = `/api/rooms/${r}/tasks`;
+      const body = { text };
+      log(`➡️ POST ${url} body=${JSON.stringify(body)}`, 'out');
+      fetch('http://localhost:8080' + url, {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + tok(),
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body)
+      }).then(async res => {
+        let txt = await res.text();
+        try { txt = JSON.stringify(JSON.parse(txt), null, 2); } catch(_) {}
+        log(`← ${res.status}: ${txt}`, res.ok ? 'in' : 'err');
+      }).catch(e => log('❌ ' + e, 'err'));
+    }
+
+    function getAllTasks() {
+      const r = rid();
+      if (!r) { log('⚠️ Введи Room ID', 'err'); return; }
+      api('GET', `/api/rooms/${r}/tasks/all`);
     }
 
     function subGame() {

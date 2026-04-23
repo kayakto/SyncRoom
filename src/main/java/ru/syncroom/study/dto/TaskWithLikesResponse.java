@@ -14,6 +14,8 @@ public class TaskWithLikesResponse {
     private int sortOrder;
     private String ownerId;
     private String ownerName;
+    @JsonProperty("isBot")
+    private boolean isBot;
     private long likeCount;
     @JsonProperty("likedByMe")
     private boolean likedByMe;

@@ -298,13 +298,18 @@ POST /api/rooms/{roomId}/pomodoro/start
 | Метод | URL | Описание |
 |-------|-----|----------|
 | GET | `/api/rooms/{roomId}/tasks` | Мои таски в комнате (`sortOrder` по возрастанию) |
-| GET | `/api/rooms/{roomId}/tasks/all` | Все таски участников с `ownerId`, `likeCount`, `likedByMe` |
+| GET | `/api/rooms/{roomId}/tasks/all` | Все таски участников с `ownerId`, `ownerName`, `isBot`, `likeCount`, `likedByMe` |
 | GET | `/api/rooms/{roomId}/leaderboard` | Лидерборд: лайки на цели, `completedTasks` / `totalTasks` |
 | POST | `/api/rooms/{roomId}/tasks/{taskId}/like` | Лайк чужой цели → `{ taskId, likeCount, likedByMe }` + WS `TASK_LIKED` |
 | DELETE | `/api/rooms/{roomId}/tasks/{taskId}/like` | Снять лайк → то же + WS `TASK_UNLIKED` |
 | POST | `/api/rooms/{roomId}/tasks` | Создать таск |
 | PUT | `/api/rooms/{roomId}/tasks/{taskId}` | Обновить таск (partial update) |
 | DELETE | `/api/rooms/{roomId}/tasks/{taskId}` | Удалить таск |
+| POST | `/api/rooms/{roomId}/bots/motivational-goals/activate` | Активировать бота целей (`goalCount`, `autoSuggest`, `suggestOnBreak`) |
+| DELETE | `/api/rooms/{roomId}/bots/motivational-goals/deactivate` | Деактивировать бота целей |
+| GET | `/api/rooms/{roomId}/bots` | Список ботов комнаты |
+| PUT | `/api/rooms/{roomId}/bots/{botId}/config` | Обновить конфиг конкретного бота комнаты |
+| DELETE | `/api/rooms/{roomId}/bots/{botId}` | Удалить бота из комнаты |
 
 Правила лайков: только участники той же комнаты; **нельзя** лайкать свою цель; один лайк с пользователя на цель; при удалении цели лайки удаляются каскадом.
 
@@ -329,6 +334,14 @@ POST /api/rooms/{roomId}/tasks
   "sortOrder": 2
 }
 ```
+
+**Мотивационный бот целей (`MOTIVATIONAL_GOALS`):**
+
+- работает через таблицы `room_bot` и `bot_goal_template`;
+- можно добавить несколько экземпляров бота в одной комнате (каждый с отдельным `botId` и конфигом);
+- при активации с `autoSuggest=true` создаёт `goalCount` задач от системного пользователя `MotivBot`;
+- при `suggestOnBreak=true` создаёт цели при переходе помодоро в `BREAK`/`LONG_BREAK`;
+- публикует WS-событие `BOT_GOAL_SUGGESTED` в `/topic/room/{roomId}/tasks`.
 
 ### Games — Quiplash + Gartic Phone
 
@@ -416,7 +429,7 @@ Authorization:Bearer <accessToken>
 | `/topic/room/{roomId}/seats` | `SEAT_TAKEN`, `SEAT_LEFT` ✨ |
 | `/topic/room/{roomId}/projector` | `PROJECTOR_STARTED`, `PROJECTOR_STOPPED`, `PROJECTOR_CONTROL`, `STREAM_LIVE`, `STREAM_OFFLINE` ✨ |
 | `/topic/room/{roomId}/pomodoro` | `POMODORO_STARTED`, `POMODORO_PHASE_CHANGED`, `POMODORO_PAUSED`, `POMODORO_RESUMED`, `POMODORO_STOPPED` ✨ |
-| `/topic/room/{roomId}/tasks` | `TASK_LIKED`, `TASK_UNLIKED` (лайки на учебные цели) |
+| `/topic/room/{roomId}/tasks` | `TASK_CREATED`, `TASK_UPDATED`, `TASK_DELETED`, `TASK_LIKED`, `TASK_UNLIKED`, `BOT_GOAL_SUGGESTED` |
 | `/topic/room/{roomId}/chat` | Сообщения чата: JSON `{ id, userId, userName, text, createdAt }` |
 | `/topic/game/{gameId}` | Quiplash: `GAME_STARTED`, `PROMPT_RECEIVED`, `WAITING_FOR_OTHERS`, `WAITING_FOR_VOTES`, `ROUND_RESULT`, `GAME_FINISHED`; Gartic: `STEP_WRITE`, `STEP_DRAW`, `STEP_GUESS`, `REVEAL_CHAIN`, `GAME_FINISHED` ✨ |
 
@@ -474,8 +487,12 @@ destination:/app/room/{roomId}/projector/control
 | `PROJECTOR_CONTROL` | `.../room/{id}/projector` | WS SEND `/projector/control` | `{ action, positionMs }` |
 | `STREAM_LIVE` | `.../room/{id}/projector` | SRS `on_publish` | `{ videoUrl }` |
 | `STREAM_OFFLINE` | `.../room/{id}/projector` | SRS `on_unpublish` | `{}` |
+| `TASK_CREATED` | `.../room/{id}/tasks` | `POST .../tasks` | `{ taskId, text, isDone, sortOrder, ownerId, ownerName, likeCount, likedByMe }` |
+| `TASK_UPDATED` | `.../room/{id}/tasks` | `PUT .../tasks/{id}` | `{ taskId, text, isDone, sortOrder, ownerId, ownerName }` |
+| `TASK_DELETED` | `.../room/{id}/tasks` | `DELETE .../tasks/{id}` | `{ taskId, ownerId }` |
 | `TASK_LIKED` | `.../room/{id}/tasks` | `POST .../tasks/{id}/like` | `{ taskId, userId, userName, likeCount, action: "LIKE" }` |
 | `TASK_UNLIKED` | `.../room/{id}/tasks` | `DELETE .../tasks/{id}/like` | `{ taskId, userId, likeCount, action: "UNLIKE" }` |
+| `BOT_GOAL_SUGGESTED` | `.../room/{id}/tasks` | activate бота / переход помодоро в break | `{ task: { id, text, ownerId, ownerName, isBot } }` |
 | `GAME_STARTED` | `.../game/{id}` | `POST /games/{id}/start` | `{ players[] }` |
 | `PLAYER_KICKED` | `.../game/{id}` (user queue) | `POST /games/{id}/start` когда игрок не готов | `{ userId, reason }` |
 | `PLAYER_UNREADY` | `.../game/{id}` | `POST /games/{id}/unready` или WS | `{ userId }` |
@@ -563,6 +580,7 @@ V9 — создание game_sessions, game_players, quiplash_* и prompt_bank
 V10 — создание gartic_chains и gartic_steps
 V11 — создание room_messages (чат комнат)
 V12 — таблица task_like (лайки на study_tasks)
+V18 — room_bot, bot_goal_template и seed MotivBot/шаблонов целей
 ```
 
 ---
@@ -586,11 +604,12 @@ gradle test
 | `PomodoroControllerTest` | REST для помодоро (study + work) | 9 |
 | `PomodoroAdvancePhaseTest` | `advancePhaseIfExpired`, BREAK/LONG_BREAK, WS, выборка | 6 |
 | `StudyTaskControllerTest` | Таски, лайки, leaderboard, идемпотентность, не участник | 12 |
+| `RoomBotControllerTest` | Активация бота целей, автогенерация, break-триггер, негативные кейсы | 6 |
 | `GameControllerTest` | REST игры: create/current/ready/unready/leave/start, leaveRoom→игра | 7 |
 | `GameServiceWebSocketTest` | Quiplash + Gartic WS flow, валидации, `PLAYER_KICKED` и таймауты | 6 |
 | `RoomChatControllerTest` | История чата: пагинация, пустой список, два автора, доступ | 7 |
 | `RoomChatServiceTest` | Валидация, trim, пагинация, broadcast, граница 4000 символов | 9 |
-| **Итого** | | **167** |
+| **Итого** | | **173** |
 
 Тесты используют H2 in-memory БД, `@MockitoBean SimpMessagingTemplate` (Spring Boot 3.4+), Redis не требуется.
 

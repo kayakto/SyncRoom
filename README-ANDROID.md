@@ -585,6 +585,11 @@ interface SyncRoomApi {
 GET    /api/rooms/{roomId}/tasks
 GET    /api/rooms/{roomId}/tasks/all
 GET    /api/rooms/{roomId}/leaderboard
+GET    /api/rooms/{roomId}/bots
+POST   /api/rooms/{roomId}/bots/motivational-goals/activate
+DELETE /api/rooms/{roomId}/bots/motivational-goals/deactivate
+PUT    /api/rooms/{roomId}/bots/{botId}/config
+DELETE /api/rooms/{roomId}/bots/{botId}
 POST   /api/rooms/{roomId}/tasks
 POST   /api/rooms/{roomId}/tasks/{taskId}/like
 DELETE /api/rooms/{roomId}/tasks/{taskId}/like
@@ -604,10 +609,14 @@ POST   /api/rooms/{roomId}/tasks/{taskId}/like
 DELETE /api/rooms/{roomId}/tasks/{taskId}/like
 ```
 
-- `GET .../tasks/all` — все цели **всех** участников с полями: `id`, `text`, `isDone`, `sortOrder`, `ownerId`, `ownerName`, `likeCount`, `likedByMe`.
+- `GET .../tasks/all` — все цели **всех** участников с полями: `id`, `text`, `isDone`, `sortOrder`, `ownerId`, `ownerName`, `isBot`, `likeCount`, `likedByMe`.
 - `GET .../leaderboard` — массив по **всем** участникам комнаты, сортировка по убыванию `totalLikes`, затем по имени: `userId`, `userName`, `avatarUrl`, `totalLikes`, `completedTasks`, `totalTasks` (`totalLikes` — сколько лайков набрали **цели этого пользователя** в комнате).
 - Лайкать можно только **чужие** цели; свой таск — `400`. Повторный `POST` like идемпотентен (второй раз без нового WS `TASK_LIKED`). `DELETE` like без лайка — `200`, `likedByMe: false`, без события `TASK_UNLIKED`.
-- Подписка на обновления лайков: **`/topic/room/{roomId}/tasks`** (см. ниже).
+- Мотивационный бот целей: `POST .../bots/motivational-goals/activate` принимает `{ "goalCount": 1..10, "autoSuggest": true|false, "suggestOnBreak": true|false }`.
+- Ограничения активации бота: пользователь должен быть участником комнаты (`400` иначе), `goalCount` должен быть в диапазоне `1..10` (`400` иначе).
+- В одной комнате можно держать несколько экземпляров мотивационного бота; управление конкретным экземпляром идёт через `botId` (`PUT .../bots/{botId}/config`, `DELETE .../bots/{botId}`).
+- Если `autoSuggest=true`, бот сразу создаёт задачи от `MotivBot`; если `suggestOnBreak=true`, бот создаёт цели на переходах помодоро в `BREAK`/`LONG_BREAK`.
+- Подписка на обновления лайков и задач бота: **`/topic/room/{roomId}/tasks`** (см. ниже).
 
 **Примеры:**
 
@@ -674,6 +683,50 @@ destination:/topic/room/{roomId}/tasks
 
 События (конверт как у других модулей: `type`, `payload`, `timestamp`):
 
+- `TASK_CREATED` — после успешного `POST /api/rooms/{roomId}/tasks`:
+  ```json
+  {
+    "type": "TASK_CREATED",
+    "payload": {
+      "taskId": "uuid",
+      "text": "Прочитать главу 5",
+      "isDone": false,
+      "sortOrder": 0,
+      "ownerId": "uuid",
+      "ownerName": "Иван",
+      "likeCount": 0,
+      "likedByMe": false
+    },
+    "timestamp": "..."
+  }
+  ```
+- `TASK_UPDATED` — после `PUT /api/rooms/{roomId}/tasks/{taskId}`:
+  ```json
+  {
+    "type": "TASK_UPDATED",
+    "payload": {
+      "taskId": "uuid",
+      "text": "Обновлённый текст",
+      "isDone": true,
+      "sortOrder": 1,
+      "ownerId": "uuid",
+      "ownerName": "Иван"
+    },
+    "timestamp": "..."
+  }
+  ```
+- `TASK_DELETED` — после `DELETE /api/rooms/{roomId}/tasks/{taskId}`:
+  ```json
+  {
+    "type": "TASK_DELETED",
+    "payload": {
+      "taskId": "uuid",
+      "ownerId": "uuid"
+    },
+    "timestamp": "..."
+  }
+  ```
+
 - `TASK_LIKED` — после первого успешного `POST .../like`:
   ```json
   {
@@ -697,6 +750,22 @@ destination:/topic/room/{roomId}/tasks
       "userId": "uuid",
       "likeCount": 4,
       "action": "UNLIKE"
+    },
+    "timestamp": "..."
+  }
+  ```
+- `BOT_GOAL_SUGGESTED` — когда мотивационный бот предложил новую цель:
+  ```json
+  {
+    "type": "BOT_GOAL_SUGGESTED",
+    "payload": {
+      "task": {
+        "id": "uuid",
+        "text": "Прочитать 30 страниц",
+        "ownerId": "bot-uuid",
+        "ownerName": "MotivBot",
+        "isBot": true
+      }
     },
     "timestamp": "..."
   }
@@ -826,7 +895,7 @@ interface SyncRoomApi {
   - кнопка «Пропустить фазу» → `skipPomodoro` (необязательна для корректной смены фаз).
 - **Учебные таски:**
   - личный список: `GET /tasks`; общая картина с лайками: `GET /tasks/all`; лидерборд: `GET /leaderboard`;
-  - подписка на `/topic/room/{roomId}/tasks` для `TASK_LIKED` / `TASK_UNLIKED`, чтобы обновлять счётчики у всех без опроса REST;
+  - подписка на `/topic/room/{roomId}/tasks` для `TASK_CREATED` / `TASK_UPDATED` / `TASK_DELETED` / `TASK_LIKED` / `TASK_UNLIKED` / `BOT_GOAL_SUGGESTED`;
   - создание/изменение/удаление **своих** тасков — REST; лайки — `POST`/`DELETE .../like;
   - `sortOrder` можно использовать для drag & drop (после перестановки — `UpdateTaskRequest`).
 

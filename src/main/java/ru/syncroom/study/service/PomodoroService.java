@@ -2,6 +2,7 @@ package ru.syncroom.study.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -43,6 +44,8 @@ public class PomodoroService {
     private final RoomParticipantRepository participantRepository;
     private final SimpMessagingTemplate messagingTemplate;
     private final PomodoroTimerService timerService;
+    private final MotivationalGoalBotService motivationalGoalBotService;
+    private final ApplicationEventPublisher eventPublisher;
 
     private String topic(UUID roomId) {
         return String.format(TOPIC_TEMPLATE, roomId);
@@ -101,15 +104,29 @@ public class PomodoroService {
 
     @Transactional
     public PomodoroResponse start(UUID roomId, UUID userId, PomodoroStartRequest request) {
-        Room room = requireRoom(roomId);
-        assertPomodoroAllowed(room);
-
         if (!participantRepository.existsByRoomIdAndUserId(roomId, userId)) {
             throw new BadRequestException("User is not a participant of this room");
         }
+        return startInternal(roomId, userId, request);
+    }
 
-        if (pomodoroRepo.findByRoomId(roomId).isPresent()) {
-            throw new BadRequestException("Pomodoro is already running in this room");
+    @Transactional
+    public PomodoroResponse startByBot(UUID roomId, UUID botUserId, PomodoroStartRequest request) {
+        return startInternal(roomId, botUserId, request);
+    }
+
+    private PomodoroResponse startInternal(UUID roomId, UUID userId, PomodoroStartRequest request) {
+        Room room = requireRoom(roomId);
+        assertPomodoroAllowed(room);
+
+        Optional<PomodoroSession> existing = pomodoroRepo.findByRoomId(roomId);
+        if (existing.isPresent()) {
+            PomodoroSession current = existing.get();
+            if ("FINISHED".equals(current.getPhase())) {
+                pomodoroRepo.delete(current);
+            } else {
+                throw new BadRequestException("Pomodoro is already running in this room");
+            }
         }
 
         User user = userRepository.findById(userId)
@@ -140,6 +157,13 @@ public class PomodoroService {
 
         PomodoroResponse response = toResponse(saved);
         publish(roomId, PomodoroEventType.POMODORO_STARTED, response);
+        motivationalGoalBotService.suggestOnPomodoroStarted(roomId);
+        eventPublisher.publishEvent(PomodoroLifecycleEvent.builder()
+                .roomId(roomId)
+                .type(PomodoroLifecycleEvent.Type.STARTED)
+                .phase("WORK")
+                .currentRound(1)
+                .build());
 
         log.debug("Pomodoro started in room {} by user {}", roomId, userId);
         return response;
@@ -289,11 +313,26 @@ public class PomodoroService {
 
         if ("FINISHED".equals(nextPhase)) {
             publish(roomId, PomodoroEventType.POMODORO_STOPPED, Map.of());
+            eventPublisher.publishEvent(PomodoroLifecycleEvent.builder()
+                    .roomId(roomId)
+                    .type(PomodoroLifecycleEvent.Type.FINISHED)
+                    .phase("FINISHED")
+                    .currentRound(nextRound)
+                    .build());
         } else {
             publish(roomId, PomodoroEventType.POMODORO_PHASE_CHANGED,
                     Map.of("phase", nextPhase,
                             "currentRound", nextRound,
                             "phaseEndAt", session.getPhaseEndAt().toInstant().toString()));
+            if ("WORK".equals(nextPhase)) {
+                motivationalGoalBotService.suggestOnRoundStart(roomId);
+            }
+            eventPublisher.publishEvent(PomodoroLifecycleEvent.builder()
+                    .roomId(roomId)
+                    .type(PomodoroLifecycleEvent.Type.PHASE_CHANGED)
+                    .phase(nextPhase)
+                    .currentRound(nextRound)
+                    .build());
         }
 
         return toResponse(session);
@@ -303,6 +342,7 @@ public class PomodoroService {
     public void stop(UUID roomId) {
         assertPomodoroAllowed(requireRoom(roomId));
         pomodoroRepo.deleteByRoomId(roomId);
+        motivationalGoalBotService.clearBotGoalsInRoom(roomId);
         publish(roomId, PomodoroEventType.POMODORO_STOPPED, Map.of());
         timerService.cancel(roomId);
     }
