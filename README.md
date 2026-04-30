@@ -410,6 +410,7 @@ POST /api/rooms/{roomId}/pomodoro/start
 | GET | `/api/rooms/{roomId}/tasks` | Мои таски в комнате (`sortOrder` по возрастанию) |
 | GET | `/api/rooms/{roomId}/tasks/all` | Все таски участников с `ownerId`, `ownerName`, `isBot`, `likeCount`, `likedByMe` |
 | GET | `/api/rooms/{roomId}/leaderboard` | Лидерборд: лайки на цели, `completedTasks` / `totalTasks` (кроме `leisure`) |
+| GET | `/api/rooms/{roomId}/leaderboard/me` | Мои метрики лидерборда в комнате |
 | POST | `/api/rooms/{roomId}/tasks/{taskId}/like` | Лайк чужой цели → `{ taskId, likeCount, likedByMe }` + WS `TASK_LIKED` |
 | DELETE | `/api/rooms/{roomId}/tasks/{taskId}/like` | Снять лайк → то же + WS `TASK_UNLIKED` |
 | POST | `/api/rooms/{roomId}/tasks` | Создать таск |
@@ -422,6 +423,8 @@ POST /api/rooms/{roomId}/pomodoro/start
 | DELETE | `/api/rooms/{roomId}/bots/{botId}` | Удалить бота из комнаты |
 
 Правила лайков: только участники той же комнаты; **нельзя** лайкать свою цель; один лайк с пользователя на цель; при удалении цели лайки удаляются каскадом.
+
+`GET /api/rooms/{roomId}/leaderboard/me` возвращает одну запись формата `LeaderboardEntryResponse` для текущего пользователя (`userId`, `userName`, `avatarUrl`, `totalLikes`, `completedTasks`, `totalTasks`).
 
 **Создание таска:**
 

@@ -444,6 +444,61 @@ class StudyTaskControllerTest {
     }
 
     @Test
+    @DisplayName("GET /leaderboard/me — возвращает только текущего пользователя")
+    void leaderboardMe_returnsCurrentUserOnly() throws Exception {
+        Room room = createRoom();
+        addParticipant(room, user);
+
+        User other = userRepository.save(User.builder()
+                .name("OtherLB")
+                .email("otherlb@example.com")
+                .provider(AuthProvider.EMAIL)
+                .passwordHash("hashed")
+                .createdAt(OffsetDateTime.now())
+                .build());
+        addParticipant(room, other);
+
+        StudyTask myDone = taskRepository.save(StudyTask.builder()
+                .user(user)
+                .room(room)
+                .text("Mine done")
+                .isDone(true)
+                .sortOrder(0)
+                .build());
+        taskRepository.save(StudyTask.builder()
+                .user(user)
+                .room(room)
+                .text("Mine todo")
+                .isDone(false)
+                .sortOrder(1)
+                .build());
+        taskRepository.save(StudyTask.builder()
+                .user(other)
+                .room(room)
+                .text("Other task")
+                .isDone(false)
+                .sortOrder(0)
+                .build());
+
+        String otherToken = "Bearer " + jwtTokenService.generateAccessToken(
+                other.getId(), other.getName(), other.getEmail(), other.getProvider().getValue());
+
+        // Другой пользователь лайкает мою цель, чтобы у меня было totalLikes=1.
+        mockMvc.perform(post("/api/rooms/{roomId}/tasks/{taskId}/like", room.getId(), myDone.getId())
+                        .header("Authorization", otherToken))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/rooms/{roomId}/leaderboard/me", room.getId())
+                        .header("Authorization", auth()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.userId").value(user.getId().toString()))
+                .andExpect(jsonPath("$.userName").value(user.getName()))
+                .andExpect(jsonPath("$.totalLikes").value(1))
+                .andExpect(jsonPath("$.completedTasks").value(1))
+                .andExpect(jsonPath("$.totalTasks").value(2));
+    }
+
+    @Test
     @DisplayName("POST like — не участник комнаты → 400")
     void likeTask_notParticipant() throws Exception {
         Room room = createRoom();

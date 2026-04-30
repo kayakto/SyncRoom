@@ -49,6 +49,16 @@ public class StudyTaskController {
         return taskService.getLeaderboard(roomId, currentUser.getId());
     }
 
+    @GetMapping("/api/rooms/{roomId}/leaderboard/me")
+    @SecurityRequirement(name = "Bearer Authentication")
+    @Operation(summary = "Мои метрики в лидерборде комнаты")
+    public LeaderboardEntryResponse getMyLeaderboardEntry(
+            @PathVariable UUID roomId,
+            @AuthenticationPrincipal User currentUser
+    ) {
+        return taskService.getMyLeaderboardEntry(roomId, currentUser.getId());
+    }
+
     @GetMapping("/api/rooms/{roomId}/tasks")
     @SecurityRequirement(name = "Bearer Authentication")
     @Operation(summary = "Получить таски текущего пользователя в комнате")

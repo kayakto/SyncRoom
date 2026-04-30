@@ -133,6 +133,31 @@ public class StudyTaskService {
         return rows;
     }
 
+    @Transactional(readOnly = true)
+    public LeaderboardEntryResponse getMyLeaderboardEntry(UUID roomId, UUID userId) {
+        requireParticipant(roomId, userId);
+        var room = roomRepository.findById(roomId)
+                .orElseThrow(() -> new NotFoundException("Room not found"));
+        if (LEADERBOARD_FORBIDDEN_CONTEXT.equals(room.getContext())) {
+            throw new BadRequestException("Leaderboard is not available in leisure rooms");
+        }
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new NotFoundException("User not found"));
+
+        long totalLikes = likeRepository.countLikesOnTasksOwnedByUserInRoom(userId, roomId);
+        long totalTasks = taskRepository.countByUser_IdAndRoom_Id(userId, roomId);
+        long completedTasks = taskRepository.countByUser_IdAndRoom_IdAndIsDoneTrue(userId, roomId);
+
+        return LeaderboardEntryResponse.builder()
+                .userId(user.getId().toString())
+                .userName(user.getName())
+                .avatarUrl(user.getAvatarUrl())
+                .totalLikes(totalLikes)
+                .completedTasks(completedTasks)
+                .totalTasks(totalTasks)
+                .build();
+    }
+
     @Transactional
     public TaskLikeMutationResponse likeTask(UUID roomId, UUID userId, UUID taskId) {
         requireParticipant(roomId, userId);

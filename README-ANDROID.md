@@ -706,6 +706,7 @@ interface SyncRoomApi {
 GET    /api/rooms/{roomId}/tasks
 GET    /api/rooms/{roomId}/tasks/all
 GET    /api/rooms/{roomId}/leaderboard
+GET    /api/rooms/{roomId}/leaderboard/me
 GET    /api/rooms/{roomId}/bots
 POST   /api/rooms/{roomId}/bots/motivational-goals/activate
 DELETE /api/rooms/{roomId}/bots/motivational-goals/deactivate
@@ -726,12 +727,14 @@ DELETE /api/rooms/{roomId}/tasks/{taskId}
 ```text
 GET    /api/rooms/{roomId}/tasks/all
 GET    /api/rooms/{roomId}/leaderboard
+GET    /api/rooms/{roomId}/leaderboard/me
 POST   /api/rooms/{roomId}/tasks/{taskId}/like
 DELETE /api/rooms/{roomId}/tasks/{taskId}/like
 ```
 
 - `GET .../tasks/all` — все цели **всех** участников с полями: `id`, `text`, `isDone`, `sortOrder`, `ownerId`, `ownerName`, `isBot`, `likeCount`, `likedByMe`.
 - `GET .../leaderboard` — массив по **всем** участникам комнаты, сортировка по убыванию `totalLikes`, затем по имени: `userId`, `userName`, `avatarUrl`, `totalLikes`, `completedTasks`, `totalTasks` (`totalLikes` — сколько лайков набрали **цели этого пользователя** в комнате). Для `context = "leisure"` endpoint возвращает `400`.
+- `GET .../leaderboard/me` — только текущий пользователь в формате `LeaderboardEntry` (те же поля, что у элемента общего лидерборда). Для `context = "leisure"` endpoint возвращает `400`.
 - Лайкать можно только **чужие** цели; свой таск — `400`. Повторный `POST` like идемпотентен (второй раз без нового WS `TASK_LIKED`). `DELETE` like без лайка — `200`, `likedByMe: false`, без события `TASK_UNLIKED`.
 - Мотивационный бот целей: `POST .../bots/motivational-goals/activate` принимает `{ "goalCount": 1..10, "autoSuggest": true|false, "suggestOnBreak": true|false }`.
 - Ограничения активации бота: пользователь должен быть участником комнаты (`400` иначе), `goalCount` должен быть в диапазоне `1..10` (`400` иначе).
@@ -966,6 +969,12 @@ interface SyncRoomApi {
         @Path("roomId") roomId: String,
         @Header("Authorization") token: String
     ): List<LeaderboardEntry>
+
+    @GET("/api/rooms/{roomId}/leaderboard/me")
+    suspend fun getMyStudyLeaderboardEntry(
+        @Path("roomId") roomId: String,
+        @Header("Authorization") token: String
+    ): LeaderboardEntry
 
     @POST("/api/rooms/{roomId}/tasks/{taskId}/like")
     suspend fun likeTask(
