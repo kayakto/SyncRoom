@@ -27,6 +27,7 @@ import java.util.stream.Collectors;
 public class StudyTaskService {
 
     private static final String TASKS_TOPIC = "/topic/room/%s/tasks";
+    private static final String LEADERBOARD_FORBIDDEN_CONTEXT = "leisure";
 
     private final StudyTaskRepository taskRepository;
     private final TaskLikeRepository likeRepository;
@@ -106,6 +107,11 @@ public class StudyTaskService {
     @Transactional(readOnly = true)
     public List<LeaderboardEntryResponse> getLeaderboard(UUID roomId, UUID userId) {
         requireParticipant(roomId, userId);
+        var room = roomRepository.findById(roomId)
+                .orElseThrow(() -> new NotFoundException("Room not found"));
+        if (LEADERBOARD_FORBIDDEN_CONTEXT.equals(room.getContext())) {
+            throw new BadRequestException("Leaderboard is not available in leisure rooms");
+        }
         List<RoomParticipant> participants = participantRepository.findByRoomId(roomId);
         List<LeaderboardEntryResponse> rows = new ArrayList<>();
         for (RoomParticipant p : participants) {

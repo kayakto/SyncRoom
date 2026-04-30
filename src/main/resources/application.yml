@@ -84,3 +84,5 @@ app:
       # Set exact callback URLs used by web/oauth clients
       vk-allowed-redirect-uris: ${APP_AUTH_OAUTH_VK_ALLOWED_REDIRECT_URIS:http://localhost:5173/auth/callback}
       yandex-allowed-redirect-uris: ${APP_AUTH_OAUTH_YANDEX_ALLOWED_REDIRECT_URIS:http://localhost:5173/auth/callback}
+  projector:
+    report-threshold: ${APP_PROJECTOR_REPORT_THRESHOLD:2}

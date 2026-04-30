@@ -63,6 +63,7 @@ APP_AUTH_COOKIES_SECURE=false
 APP_AUTH_COOKIES_SAME_SITE=Lax
 APP_AUTH_OAUTH_VK_ALLOWED_REDIRECT_URIS=http://localhost:5173/auth/callback
 APP_AUTH_OAUTH_YANDEX_ALLOWED_REDIRECT_URIS=http://localhost:5173/auth/callback
+APP_PROJECTOR_REPORT_THRESHOLD=2
 REDIS_HOST=localhost               # опционально
 REDIS_PORT=6379                    # опционально
 APP_PORT=8080
@@ -230,12 +231,16 @@ OLLAMA_VISION_MODEL=llava:7b
 
 **Коды ответов:** `200` успех, `403` чужое место, `404` не найдено, `409` место занято другим.
 
-### Projector — совместный просмотр (Embed + RTMP)
+### Projector — совместный просмотр (только leisure) + очередь
+
+Доступно только в комнатах с `context="leisure"`.
 
 | Метод | URL | Описание |
 |-------|-----|----------|
 | GET | `/api/rooms/{roomId}/projector` | Текущее состояние проектора в комнате |
-| POST | `/api/rooms/{roomId}/projector` | Включить / перезапустить проектор |
+| POST | `/api/rooms/{roomId}/projector` | Добавить видео в очередь (если очередь пуста — старт сразу) |
+| GET | `/api/rooms/{roomId}/projector/queue` | Получить текущую очередь проектора |
+| POST | `/api/rooms/{roomId}/projector/report` | Пожаловаться на текущий PLAYING-слот |
 | DELETE | `/api/rooms/{roomId}/projector` | Выключить проектор (только хост) |
 | POST | `/api/projector/srs-callback` | Внутренний callback от SRS (RTMP медиасервер) |
 
@@ -260,15 +265,78 @@ OLLAMA_VISION_MODEL=llava:7b
   - `videoUrl = "http://{SRS_HOST}:8085/live/{streamKey}.m3u8"` — для воспроизведения у зрителей
   - `rtmpUrl = "rtmp://{SRS_HOST}:1935/live/{streamKey}"` — возвращается **только хосту** (для OBS / камеры).
 
-**Правила:**
+**Очередь и лимиты:**
 
-- 1 активный проектор на комнату (`UNIQUE(room_id)`).
-- Включить проектор может любой участник комнаты; при этом хостом становится он, старая сессия затирается.
-- Выключить (`DELETE`) и управлять воспроизведением (play/pause/seek) может только текущий хост.
+- Один пользователь не может иметь более одной активной заявки (`PLAYING`/`WAITING`) в очереди одной комнаты.
+- В запросе можно передать `durationSec`:
+  - если `durationSec <= 42` — слот проигрывается до конца;
+  - если `durationSec > 42` (или не передан) — слот ограничен `42` сек.
+- После завершения своего слота пользователь может снова отправить ссылку и встать в очередь.
+- Если в очереди никого нет — пользователь может запускать ролики подряд.
+- На текущий `PLAYING` слот можно отправлять жалобы (`POST /projector/report`) от участников комнаты.
+- Жалобы уникальны по паре `queueItem + reporter` (повторная жалоба того же пользователя не увеличивает счётчик).
+- Если число жалоб достигает порога `APP_PROJECTOR_REPORT_THRESHOLD` (по умолчанию `2`), слот удаляется, хосту отправляется персональное WS-уведомление, очередь автоматически продвигается.
 
-### Pomodoro — общий таймер для учебных и рабочих комнат
+**Пример ответа POST /projector/report:**
 
-Доступно при `context="study"` **или** `context="work"`. Для `sport` / `leisure` все эндпоинты помодоро возвращают `400`.
+```json
+{
+  "queueItemId": "uuid",
+  "reportsCount": 2,
+  "threshold": 2,
+  "removed": true
+}
+```
+
+**Пример ответа POST /projector:**
+
+```json
+{
+  "queueItemId": "uuid",
+  "status": "PLAYING",
+  "position": 1,
+  "slotDurationSec": 42,
+  "projector": {
+    "id": "uuid",
+    "roomId": "uuid",
+    "mode": "EMBED",
+    "videoUrl": "https://vk.com/video_ext.php?oid=-123&id=456"
+  }
+}
+```
+
+**Пример ответа GET /projector/queue:**
+
+```json
+{
+  "items": [
+    {
+      "queueItemId": "uuid-1",
+      "userId": "user-1",
+      "userName": "Alice",
+      "mode": "EMBED",
+      "videoUrl": "https://example.com/a.mp4",
+      "videoTitle": "A",
+      "slotDurationSec": 42,
+      "status": "PLAYING"
+    },
+    {
+      "queueItemId": "uuid-2",
+      "userId": "user-2",
+      "userName": "Bob",
+      "mode": "EMBED",
+      "videoUrl": "https://example.com/b.mp4",
+      "videoTitle": "B",
+      "slotDurationSec": 18,
+      "status": "WAITING"
+    }
+  ]
+}
+```
+
+### Pomodoro — общий таймер только для study-комнат
+
+Доступно только при `context="study"`. Для `work` / `sport` / `leisure` все эндпоинты помодоро возвращают `400`.
 
 | Метод | URL | Описание |
 |-------|-----|----------|
@@ -292,7 +360,7 @@ POST /api/rooms/{roomId}/pomodoro/start
 ```
 
 - если тело пустое — используются значения по умолчанию (25/5/15/4);
-- только участники комнаты с `context="study"` или `context="work"` могут пользоваться помодоро (все методы, включая `GET` / `DELETE`);
+- только участники комнаты с `context="study"` могут пользоваться помодоро (все методы, включая `GET` / `DELETE`);
 - в комнате может быть только один активный таймер (UNIQUE room_id).
 - **Автосмена фаз на сервере:** раз в 1 с фоновая задача ищет сессии с `phase` WORK/BREAK/LONG_BREAK и `phaseEndAt <= now()`, переводит на следующую фазу и шлёт `POMODORO_PHASE_CHANGED` (или `POMODORO_STOPPED` при завершении). Дублирует и подстраховывает in-memory таймер (`PomodoroTimerService`), в том числе после рестарта JVM. В профиле `test` планировщик отключён (`@Profile("!test")`).
 
@@ -319,7 +387,7 @@ POST /api/rooms/{roomId}/pomodoro/start
 |-------|-----|----------|
 | GET | `/api/rooms/{roomId}/tasks` | Мои таски в комнате (`sortOrder` по возрастанию) |
 | GET | `/api/rooms/{roomId}/tasks/all` | Все таски участников с `ownerId`, `ownerName`, `isBot`, `likeCount`, `likedByMe` |
-| GET | `/api/rooms/{roomId}/leaderboard` | Лидерборд: лайки на цели, `completedTasks` / `totalTasks` |
+| GET | `/api/rooms/{roomId}/leaderboard` | Лидерборд: лайки на цели, `completedTasks` / `totalTasks` (кроме `leisure`) |
 | POST | `/api/rooms/{roomId}/tasks/{taskId}/like` | Лайк чужой цели → `{ taskId, likeCount, likedByMe }` + WS `TASK_LIKED` |
 | DELETE | `/api/rooms/{roomId}/tasks/{taskId}/like` | Снять лайк → то же + WS `TASK_UNLIKED` |
 | POST | `/api/rooms/{roomId}/tasks` | Создать таск |
@@ -364,6 +432,8 @@ POST /api/rooms/{roomId}/tasks
 - публикует WS-событие `BOT_GOAL_SUGGESTED` в `/topic/room/{roomId}/tasks`.
 
 ### Games — Quiplash + Gartic Phone
+
+Доступно только в комнатах с `context="leisure"`.
 
 | Метод | URL | Описание |
 |-------|-----|----------|
@@ -447,7 +517,7 @@ Authorization:Bearer <accessToken>
 |-------|---------|
 | `/topic/room/{roomId}` | `PARTICIPANT_JOINED`, `PARTICIPANT_LEFT` |
 | `/topic/room/{roomId}/seats` | `SEAT_TAKEN`, `SEAT_LEFT` ✨ |
-| `/topic/room/{roomId}/projector` | `PROJECTOR_STARTED`, `PROJECTOR_STOPPED`, `PROJECTOR_CONTROL`, `STREAM_LIVE`, `STREAM_OFFLINE` ✨ |
+| `/topic/room/{roomId}/projector` | `PROJECTOR_STARTED`, `PROJECTOR_STOPPED`, `PROJECTOR_CONTROL`, `STREAM_LIVE`, `STREAM_OFFLINE`, `PROJECTOR_QUEUE_UPDATED`, `REMOVED_BY_REPORTS` ✨ |
 | `/topic/room/{roomId}/pomodoro` | `POMODORO_STARTED`, `POMODORO_PHASE_CHANGED`, `POMODORO_PAUSED`, `POMODORO_RESUMED`, `POMODORO_STOPPED` ✨ |
 | `/topic/room/{roomId}/tasks` | `TASK_CREATED`, `TASK_UPDATED`, `TASK_DELETED`, `TASK_LIKED`, `TASK_UNLIKED`, `BOT_GOAL_SUGGESTED` |
 | `/topic/room/{roomId}/chat` | Сообщения чата: JSON `{ id, userId, userName, text, createdAt }` |
@@ -481,6 +551,8 @@ id:sub-projector
 - `PROJECTOR_STOPPED` — `{ "hostId": "uuid" }`
 - `PROJECTOR_CONTROL` (только EMBED) — `{ "action": "PLAY|PAUSE|SEEK", "positionMs": 42000 }`
 - `STREAM_LIVE` / `STREAM_OFFLINE` (только STREAM)
+- `PROJECTOR_QUEUE_UPDATED` — `{ "items": [...] }`
+- `REMOVED_BY_REPORTS` — `{ "queueItemId": "uuid", "hostId": "uuid", "reportsCount": 2, "threshold": 2 }`
 
 **Отправка управления (от хоста, EMBED):**
 
@@ -503,10 +575,12 @@ destination:/app/room/{roomId}/projector/control
 | `SEAT_TAKEN` | `.../room/{id}/seats` | `POST /sit` | `{ seatId, user: { id, name, avatarUrl }, participantCount, observerCount }` |
 | `SEAT_LEFT` | `.../room/{id}/seats` | `POST /leave seat`, выход из комнаты или закрытие **последнего** STOMP (с JWT) | `{ seatId, userId, participantCount, observerCount }` |
 | `PROJECTOR_STARTED` | `.../room/{id}/projector` | `POST /projector` | `{ host, mode, videoUrl, videoTitle, streamKey? }` |
-| `PROJECTOR_STOPPED` | `.../room/{id}/projector` | `DELETE /projector` или выход хоста | `{ hostId }` |
+| `PROJECTOR_STOPPED` | `.../room/{id}/projector` | `DELETE /projector`, выход хоста или смена слота очереди | `{ hostId, reason? }` |
 | `PROJECTOR_CONTROL` | `.../room/{id}/projector` | WS SEND `/projector/control` | `{ action, positionMs }` |
 | `STREAM_LIVE` | `.../room/{id}/projector` | SRS `on_publish` | `{ videoUrl }` |
 | `STREAM_OFFLINE` | `.../room/{id}/projector` | SRS `on_unpublish` | `{}` |
+| `PROJECTOR_QUEUE_UPDATED` | `.../room/{id}/projector` | enqueue/stop/автопромоут очереди | `{ items: [...] }` |
+| `REMOVED_BY_REPORTS` | `.../room/{id}/projector` | порог жалоб на текущий PLAYING-слот | `{ queueItemId, hostId, reportsCount, threshold }` |
 | `TASK_CREATED` | `.../room/{id}/tasks` | `POST .../tasks` | `{ taskId, text, isDone, sortOrder, ownerId, ownerName, likeCount, likedByMe }` |
 | `TASK_UPDATED` | `.../room/{id}/tasks` | `PUT .../tasks/{id}` | `{ taskId, text, isDone, sortOrder, ownerId, ownerName }` |
 | `TASK_DELETED` | `.../room/{id}/tasks` | `DELETE .../tasks/{id}` | `{ taskId, ownerId }` |
@@ -559,11 +633,11 @@ src/main/java/ru/syncroom/
 │   ├── repository/ # RoomRepository, SeatRepository, RoomMessageRepository
 │   └── ws/         # RoomEvent, RoomChatWsController, SeatTakenPayload, SeatLeftPayload
 ├── projector/
-│   ├── controller/ # REST: /api/rooms/{roomId}/projector, SRS callback
-│   ├── service/    # ProjectorService (EMBED/STREAM, WS-события)
-│   ├── dto/        # ProjectorRequest, ProjectorResponse, UserDto
-│   ├── domain/     # ProjectorSession (JPA)
-│   ├── repository/ # ProjectorSessionRepository
+│   ├── controller/ # REST: /api/rooms/{roomId}/projector, /projector/queue, SRS callback
+│   ├── service/    # ProjectorService (EMBED/STREAM + очередь + WS-события)
+│   ├── dto/        # ProjectorRequest, ProjectorResponse, ProjectorEnqueueResponse, ProjectorQueueResponse
+│   ├── domain/     # ProjectorSession, ProjectorQueueItem (JPA)
+│   ├── repository/ # ProjectorSessionRepository, ProjectorQueueItemRepository
 │   └── ws/         # ProjectorEvent, ProjectorEventType, ProjectorWsController
 ├── games/
 │   ├── controller/ # REST: /api/rooms/{roomId}/games, /api/games/{gameId}/...
@@ -601,6 +675,8 @@ V10 — создание gartic_chains и gartic_steps
 V11 — создание room_messages (чат комнат)
 V12 — таблица task_like (лайки на study_tasks)
 V18 — room_bot, bot_goal_template и seed MotivBot/шаблонов целей
+V20 — projector_queue_items (очередь проектора: WAITING/PLAYING/DONE)
+V21 — projector_queue_reports (жалобы на слот проектора, уникальность queueItem+reporter)
 ```
 
 ---
@@ -621,7 +697,7 @@ gradle test
 | `WebSocketRoomDisconnectListenerTest` | STOMP disconnect → leave комнаты, мультисессии | 3 |
 | `SeatControllerTest` | sit, stand-up, auto-move, 403, 409, 404 | 9 |
 | `ProjectorControllerTest` | REST + SRS callback для проектора | 8 |
-| `PomodoroControllerTest` | REST для помодоро (study + work) | 9 |
+| `PomodoroControllerTest` | REST для помодоро (только study; work/sport/leisure -> 400) | 9 |
 | `PomodoroAdvancePhaseTest` | `advancePhaseIfExpired`, BREAK/LONG_BREAK, WS, выборка | 6 |
 | `StudyTaskControllerTest` | Таски, лайки, leaderboard, идемпотентность, не участник | 12 |
 | `RoomBotControllerTest` | Активация бота целей, автогенерация, break-триггер, негативные кейсы | 6 |

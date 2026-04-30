@@ -15,6 +15,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
 import ru.syncroom.common.security.JwtTokenService;
 import ru.syncroom.projector.domain.ProjectorSession;
+import ru.syncroom.projector.repository.ProjectorQueueReportRepository;
 import ru.syncroom.projector.repository.ProjectorSessionRepository;
 import ru.syncroom.rooms.domain.Room;
 import ru.syncroom.rooms.domain.RoomParticipant;
@@ -69,6 +70,9 @@ class ProjectorControllerTest {
     private ProjectorSessionRepository projectorSessionRepository;
 
     @Autowired
+    private ProjectorQueueReportRepository projectorQueueReportRepository;
+
+    @Autowired
     private JwtTokenService jwtTokenService;
 
     @MockitoBean
@@ -82,6 +86,7 @@ class ProjectorControllerTest {
 
     @BeforeEach
     void setUp() {
+        projectorQueueReportRepository.deleteAll();
         participantRepository.deleteAll();
         projectorSessionRepository.deleteAll();
         roomRepository.deleteAll();
@@ -133,7 +138,7 @@ class ProjectorControllerTest {
     @Test
     @DisplayName("POST /api/rooms/{roomId}/projector (EMBED) - успешный запуск проектора")
     void startProjector_Embed_Success() throws Exception {
-        Room room = createRoom("study");
+        Room room = createRoom("leisure");
         addParticipant(room, hostUser);
 
         String body = """
@@ -150,12 +155,14 @@ class ProjectorControllerTest {
                         .content(body))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.roomId").value(room.getId().toString()))
-                .andExpect(jsonPath("$.mode").value("EMBED"))
-                .andExpect(jsonPath("$.videoUrl").value(containsString("vk.com")))
-                .andExpect(jsonPath("$.videoTitle").value("Лекция по матану"))
-                .andExpect(jsonPath("$.isPlaying").value(false))
-                .andExpect(jsonPath("$.positionMs").value(0));
+                .andExpect(jsonPath("$.status").value("PLAYING"))
+                .andExpect(jsonPath("$.position").value(1))
+                .andExpect(jsonPath("$.projector.roomId").value(room.getId().toString()))
+                .andExpect(jsonPath("$.projector.mode").value("EMBED"))
+                .andExpect(jsonPath("$.projector.videoUrl").value(containsString("vk.com")))
+                .andExpect(jsonPath("$.projector.videoTitle").value("Лекция по матану"))
+                .andExpect(jsonPath("$.projector.isPlaying").value(false))
+                .andExpect(jsonPath("$.projector.positionMs").value(0));
 
         // В БД должна появиться одна projector_sessions запись
         assertThat(projectorSessionRepository.findByRoomId(room.getId())).isPresent();
@@ -164,7 +171,7 @@ class ProjectorControllerTest {
     @Test
     @DisplayName("POST /api/rooms/{roomId}/projector (STREAM) - успешный запуск RTMP-стрима")
     void startProjector_Stream_Success() throws Exception {
-        Room room = createRoom("study");
+        Room room = createRoom("leisure");
         addParticipant(room, hostUser);
 
         String body = """
@@ -179,19 +186,20 @@ class ProjectorControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.roomId").value(room.getId().toString()))
-                .andExpect(jsonPath("$.mode").value("STREAM"))
-                .andExpect(jsonPath("$.videoTitle").value("Стрим Полины"))
-                .andExpect(jsonPath("$.streamKey").value("room-" + room.getId()))
-                .andExpect(jsonPath("$.videoUrl").value("http://localhost:8085/live/" + "room-" + room.getId() + ".m3u8"))
-                .andExpect(jsonPath("$.isLive").value(false))
-                .andExpect(jsonPath("$.rtmpUrl").value("rtmp://localhost:1935/live/" + "room-" + room.getId()));
+                .andExpect(jsonPath("$.status").value("PLAYING"))
+                .andExpect(jsonPath("$.projector.roomId").value(room.getId().toString()))
+                .andExpect(jsonPath("$.projector.mode").value("STREAM"))
+                .andExpect(jsonPath("$.projector.videoTitle").value("Стрим Полины"))
+                .andExpect(jsonPath("$.projector.streamKey").value("room-" + room.getId()))
+                .andExpect(jsonPath("$.projector.videoUrl").value("http://localhost:8085/live/" + "room-" + room.getId() + ".m3u8"))
+                .andExpect(jsonPath("$.projector.isLive").value(false))
+                .andExpect(jsonPath("$.projector.rtmpUrl").value("rtmp://localhost:1935/live/" + "room-" + room.getId()));
     }
 
     @Test
     @DisplayName("POST /api/rooms/{roomId}/projector - ошибка, если не участник комнаты → 403")
     void startProjector_ForbiddenForNonParticipant() throws Exception {
-        Room room = createRoom("study");
+        Room room = createRoom("leisure");
         // hostUser не добавлен в участники
 
         String body = """
@@ -215,7 +223,7 @@ class ProjectorControllerTest {
     @Test
     @DisplayName("GET /api/rooms/{roomId}/projector - 404, если проектор не включён")
     void getProjector_NotFoundWhenNoSession() throws Exception {
-        Room room = createRoom("study");
+        Room room = createRoom("leisure");
         addParticipant(room, hostUser);
 
         mockMvc.perform(get("/api/rooms/{roomId}/projector", room.getId())
@@ -226,7 +234,7 @@ class ProjectorControllerTest {
     @Test
     @DisplayName("GET /api/rooms/{roomId}/projector - rtmpUrl возвращается только хосту")
     void getProjector_RtmpUrlVisibleOnlyForHost() throws Exception {
-        Room room = createRoom("study");
+        Room room = createRoom("leisure");
         addParticipant(room, hostUser);
 
         // сначала запускаем STREAM-проектор от имени хоста
@@ -278,7 +286,7 @@ class ProjectorControllerTest {
     @Test
     @DisplayName("DELETE /api/rooms/{roomId}/projector - успешное выключение хостом")
     void stopProjector_SuccessByHost() throws Exception {
-        Room room = createRoom("study");
+        Room room = createRoom("leisure");
         addParticipant(room, hostUser);
 
         String body = """
@@ -306,7 +314,7 @@ class ProjectorControllerTest {
     @Test
     @DisplayName("DELETE /api/rooms/{roomId}/projector - 403, если не хост")
     void stopProjector_ForbiddenForNonHost() throws Exception {
-        Room room = createRoom("study");
+        Room room = createRoom("leisure");
         addParticipant(room, hostUser);
 
         String body = """
@@ -349,7 +357,7 @@ class ProjectorControllerTest {
     @Test
     @DisplayName("POST /api/projector/srs-callback - on_publish и on_unpublish обновляют isLive")
     void srsCallback_UpdatesIsLiveFlag() throws Exception {
-        Room room = createRoom("study");
+        Room room = createRoom("leisure");
         addParticipant(room, hostUser);
 
         // создаём STREAM-сессию через сервисный эндпоинт
@@ -405,6 +413,165 @@ class ProjectorControllerTest {
 
         ProjectorSession afterUnpublish = projectorSessionRepository.findById(session.getId()).orElseThrow();
         assertThat(afterUnpublish.getIsLive()).isFalse();
+    }
+
+    @Test
+    @DisplayName("POST /api/rooms/{roomId}/projector - 400 для не-leisure комнаты")
+    void startProjector_BadRequestForNonLeisureRoom() throws Exception {
+        Room room = createRoom("study");
+        addParticipant(room, hostUser);
+
+        String body = """
+                {
+                  "mode": "EMBED",
+                  "videoUrl": "https://example.com/video.mp4"
+                }
+                """;
+
+        mockMvc.perform(post("/api/rooms/{roomId}/projector", room.getId())
+                        .header("Authorization", authHeaderForHost())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(containsString("only in leisure")));
+    }
+
+    @Test
+    @DisplayName("Очередь проектора: второй пользователь попадает в QUEUED и видит позицию")
+    void projectorQueue_SecondUserQueued() throws Exception {
+        Room room = createRoom("leisure");
+        addParticipant(room, hostUser);
+
+        User second = userRepository.save(User.builder()
+                .name("Second")
+                .email("second@example.com")
+                .provider(AuthProvider.EMAIL)
+                .passwordHash("hashed")
+                .createdAt(OffsetDateTime.now())
+                .build());
+        addParticipant(room, second);
+        String secondToken = jwtTokenService.generateAccessToken(
+                second.getId(), second.getName(), second.getEmail(), second.getProvider().getValue());
+
+        mockMvc.perform(post("/api/rooms/{roomId}/projector", room.getId())
+                        .header("Authorization", authHeaderForHost())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"mode":"EMBED","videoUrl":"https://example.com/1.mp4","durationSec":50}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("PLAYING"))
+                .andExpect(jsonPath("$.slotDurationSec").value(42));
+
+        mockMvc.perform(post("/api/rooms/{roomId}/projector", room.getId())
+                        .header("Authorization", authHeader(secondToken))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"mode":"EMBED","videoUrl":"https://example.com/2.mp4","durationSec":10}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("QUEUED"))
+                .andExpect(jsonPath("$.position").value(2))
+                .andExpect(jsonPath("$.slotDurationSec").value(10));
+
+        mockMvc.perform(get("/api/rooms/{roomId}/projector/queue", room.getId())
+                        .header("Authorization", authHeader(secondToken)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items[0].status").value("PLAYING"))
+                .andExpect(jsonPath("$.items[1].status").value("WAITING"))
+                .andExpect(jsonPath("$.items[1].userName").value("Second"));
+    }
+
+    @Test
+    @DisplayName("Очередь проектора: пользователь не может добавить повторную заявку, пока есть WAITING/PLAYING")
+    void projectorQueue_DuplicateRequestForbidden() throws Exception {
+        Room room = createRoom("leisure");
+        addParticipant(room, hostUser);
+
+        mockMvc.perform(post("/api/rooms/{roomId}/projector", room.getId())
+                        .header("Authorization", authHeaderForHost())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"mode":"EMBED","videoUrl":"https://example.com/1.mp4"}
+                                """))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/rooms/{roomId}/projector", room.getId())
+                        .header("Authorization", authHeaderForHost())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"mode":"EMBED","videoUrl":"https://example.com/again.mp4"}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(containsString("already has an active")));
+    }
+
+    @Test
+    @DisplayName("POST /projector/report — при достижении порога слот удаляется и стартует следующий")
+    void reportProjector_RemovesCurrentAndPromotesNext() throws Exception {
+        Room room = createRoom("leisure");
+        addParticipant(room, hostUser);
+
+        User second = userRepository.save(User.builder()
+                .name("Second")
+                .email("second-r@example.com")
+                .provider(AuthProvider.EMAIL)
+                .passwordHash("hashed")
+                .createdAt(OffsetDateTime.now())
+                .build());
+        User third = userRepository.save(User.builder()
+                .name("Third")
+                .email("third-r@example.com")
+                .provider(AuthProvider.EMAIL)
+                .passwordHash("hashed")
+                .createdAt(OffsetDateTime.now())
+                .build());
+        addParticipant(room, second);
+        addParticipant(room, third);
+        String secondToken = jwtTokenService.generateAccessToken(
+                second.getId(), second.getName(), second.getEmail(), second.getProvider().getValue());
+        String thirdToken = jwtTokenService.generateAccessToken(
+                third.getId(), third.getName(), third.getEmail(), third.getProvider().getValue());
+
+        // host -> PLAYING
+        mockMvc.perform(post("/api/rooms/{roomId}/projector", room.getId())
+                        .header("Authorization", authHeaderForHost())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"mode":"EMBED","videoUrl":"https://example.com/host.mp4"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("PLAYING"));
+
+        // second -> WAITING
+        mockMvc.perform(post("/api/rooms/{roomId}/projector", room.getId())
+                        .header("Authorization", authHeader(secondToken))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"mode":"EMBED","videoUrl":"https://example.com/second.mp4"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("QUEUED"));
+
+        // 1st report
+        mockMvc.perform(post("/api/rooms/{roomId}/projector/report", room.getId())
+                        .header("Authorization", authHeader(secondToken)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.removed").value(false))
+                .andExpect(jsonPath("$.reportsCount").value(1));
+
+        // 2nd report reaches default threshold=2 -> removed + next item starts
+        mockMvc.perform(post("/api/rooms/{roomId}/projector/report", room.getId())
+                        .header("Authorization", authHeader(thirdToken)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.removed").value(true))
+                .andExpect(jsonPath("$.reportsCount").value(2));
+
+        mockMvc.perform(get("/api/rooms/{roomId}/projector", room.getId())
+                        .header("Authorization", authHeader(secondToken)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.host.name").value("Second"))
+                .andExpect(jsonPath("$.videoUrl").value("https://example.com/second.mp4"));
     }
 }
 

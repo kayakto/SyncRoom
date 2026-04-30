@@ -11,6 +11,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 import ru.syncroom.projector.dto.ProjectorRequest;
+import ru.syncroom.projector.dto.ProjectorEnqueueResponse;
+import ru.syncroom.projector.dto.ProjectorQueueResponse;
+import ru.syncroom.projector.dto.ProjectorReportResponse;
 import ru.syncroom.projector.dto.ProjectorResponse;
 import ru.syncroom.projector.service.ProjectorService;
 import ru.syncroom.users.domain.User;
@@ -60,6 +63,16 @@ public class ProjectorController {
         return projectorService.getProjector(roomId, currentUser.getId());
     }
 
+    @GetMapping("/api/rooms/{roomId}/projector/queue")
+    @SecurityRequirement(name = "Bearer Authentication")
+    @Operation(summary = "Получить очередь проектора")
+    public ProjectorQueueResponse getProjectorQueue(
+            @PathVariable UUID roomId,
+            @AuthenticationPrincipal User currentUser
+    ) {
+        return projectorService.getQueue(roomId, currentUser.getId());
+    }
+
     /**
      * POST /api/rooms/{roomId}/projector
      *
@@ -81,7 +94,7 @@ public class ProjectorController {
     })
     @PostMapping("/api/rooms/{roomId}/projector")
     @SecurityRequirement(name = "Bearer Authentication")
-    public ProjectorResponse startProjector(
+    public ProjectorEnqueueResponse startProjector(
             @PathVariable UUID roomId,
             @Valid @RequestBody ProjectorRequest request,
             @AuthenticationPrincipal User currentUser
@@ -113,6 +126,16 @@ public class ProjectorController {
             @AuthenticationPrincipal User currentUser
     ) {
         projectorService.stopProjector(roomId, currentUser.getId());
+    }
+
+    @PostMapping("/api/rooms/{roomId}/projector/report")
+    @SecurityRequirement(name = "Bearer Authentication")
+    @Operation(summary = "Пожаловаться на текущий ролик проектора")
+    public ProjectorReportResponse reportProjector(
+            @PathVariable UUID roomId,
+            @AuthenticationPrincipal User currentUser
+    ) {
+        return projectorService.reportCurrent(roomId, currentUser.getId());
     }
 
     /**

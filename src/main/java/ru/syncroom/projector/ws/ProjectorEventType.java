@@ -18,5 +18,11 @@ public enum ProjectorEventType {
     STREAM_LIVE,
 
     /** RTMP stream ended (SRS on_unpublish callback). Payload: empty. */
-    STREAM_OFFLINE
+    STREAM_OFFLINE,
+
+    /** Projector queue changed. Payload: { items: [...] }. */
+    PROJECTOR_QUEUE_UPDATED,
+
+    /** Current slot was removed due to reports threshold. */
+    REMOVED_BY_REPORTS
 }

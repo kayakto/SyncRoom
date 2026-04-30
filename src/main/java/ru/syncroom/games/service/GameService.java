@@ -65,6 +65,7 @@ public class GameService {
     private static final int GARTIC_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
     private static final int BOT_STEP_MAX_RETRIES = 3;
     private static final String DEFAULT_TEXT = "...";
+    private static final String GAMES_ALLOWED_CONTEXT = "leisure";
     private static final String WHITE_PNG_BASE64 = "data:image/png;base64,"
             + "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMBAAZ9l1cAAAAASUVORK5CYII=";
     @Value("${games.bot.schedule-after-commit:true}")
@@ -84,6 +85,7 @@ public class GameService {
     @Transactional
     public GameResponse createGame(UUID roomId, UUID creatorId, String gameType) {
         var room = roomRepository.findById(roomId).orElseThrow(() -> new NotFoundException("Room not found"));
+        assertGamesAllowed(room.getContext());
         if (!roomParticipantRepository.existsByRoomIdAndUserId(roomId, creatorId)) {
             throw new BadRequestException("User is not a participant of this room");
         }
@@ -110,6 +112,8 @@ public class GameService {
 
     @Transactional(readOnly = true)
     public GameResponse getCurrent(UUID roomId) {
+        var room = roomRepository.findById(roomId).orElseThrow(() -> new NotFoundException("Room not found"));
+        assertGamesAllowed(room.getContext());
         GameSession session = gameSessionRepository.findFirstByRoomIdAndStatusNotOrderByCreatedAtDesc(roomId, "FINISHED")
                 .orElseThrow(() -> new NotFoundException("No active game"));
         return toResponse(session);
@@ -130,6 +134,7 @@ public class GameService {
     @Transactional
     public GameResponse addBots(UUID gameId, UUID requesterId, String botType, int count) {
         GameSession game = gameSessionRepository.findById(gameId).orElseThrow(() -> new NotFoundException("Game not found"));
+        assertGamesAllowed(game.getRoom().getContext());
         if (!"LOBBY".equals(game.getStatus())) {
             throw new BadRequestException("Bots can be added only in LOBBY");
         }
@@ -187,6 +192,7 @@ public class GameService {
     @Transactional
     public GameResponse removeBot(UUID gameId, UUID requesterId, UUID botId) {
         GameSession game = gameSessionRepository.findById(gameId).orElseThrow(() -> new NotFoundException("Game not found"));
+        assertGamesAllowed(game.getRoom().getContext());
         if (!"LOBBY".equals(game.getStatus())) {
             throw new BadRequestException("Bots can be removed only in LOBBY");
         }
@@ -204,6 +210,7 @@ public class GameService {
     public void markReady(UUID gameId, UUID userId) {
         cancelDisconnectUnreadyTimer(gameId, userId);
         GameSession game = gameSessionRepository.findById(gameId).orElseThrow(() -> new NotFoundException("Game not found"));
+        assertGamesAllowed(game.getRoom().getContext());
         GamePlayer player = gamePlayerRepository.findByGameIdAndUserId(gameId, userId).orElseGet(() -> {
             User user = userRepository.findById(userId).orElseThrow(() -> new NotFoundException("User not found"));
             return gamePlayerRepository.save(GamePlayer.builder()
@@ -222,6 +229,7 @@ public class GameService {
     public void markUnready(UUID gameId, UUID userId) {
         cancelDisconnectUnreadyTimer(gameId, userId);
         GameSession game = gameSessionRepository.findById(gameId).orElseThrow(() -> new NotFoundException("Game not found"));
+        assertGamesAllowed(game.getRoom().getContext());
         if (!"LOBBY".equals(game.getStatus())) {
             throw new BadRequestException("Cannot change ready state: game is not in LOBBY");
         }
@@ -238,6 +246,7 @@ public class GameService {
     @Transactional
     public void leaveLobby(UUID gameId, UUID userId) {
         GameSession game = gameSessionRepository.findById(gameId).orElseThrow(() -> new NotFoundException("Game not found"));
+        assertGamesAllowed(game.getRoom().getContext());
         if (!"LOBBY".equals(game.getStatus())) {
             throw new BadRequestException("Cannot leave lobby: game already started or finished");
         }
@@ -297,6 +306,7 @@ public class GameService {
     @Transactional
     public void startGame(UUID gameId) {
         GameSession game = gameSessionRepository.findById(gameId).orElseThrow(() -> new NotFoundException("Game not found"));
+        assertGamesAllowed(game.getRoom().getContext());
         List<GamePlayer> players = gamePlayerRepository.findByGameId(gameId);
         List<GamePlayer> readyPlayers = players.stream()
                 .filter(p -> Boolean.TRUE.equals(p.getIsReady()))
@@ -345,6 +355,7 @@ public class GameService {
     public void stopGame(UUID gameId, UUID requesterId) {
         GameSession game = gameSessionRepository.findById(gameId)
                 .orElseThrow(() -> new NotFoundException("Game not found"));
+        assertGamesAllowed(game.getRoom().getContext());
         if (!roomParticipantRepository.existsByRoomIdAndUserId(game.getRoom().getId(), requesterId)) {
             throw new BadRequestException("User is not a participant of this room");
         }
@@ -363,6 +374,8 @@ public class GameService {
     @Transactional
     public void handleAction(UUID gameId, UUID userId, GameActionMessage msg) {
         cancelDisconnectUnreadyTimer(gameId, userId);
+        GameSession game = gameSessionRepository.findById(gameId).orElseThrow(() -> new NotFoundException("Game not found"));
+        assertGamesAllowed(game.getRoom().getContext());
         String type = msg.getType();
         gameTraceLogger.trace(gameId, "ACTION_RECEIVED userId=" + userId + " type=" + type + " payload=" + payloadPreview(msg.getPayload()));
         if ("PLAYER_READY".equals(type)) {
@@ -1385,6 +1398,7 @@ public class GameService {
     @Transactional
     public Map<String, String> uploadGarticDrawing(UUID gameId, UUID userId, byte[] pngBytes) {
         GameSession game = gameSessionRepository.findById(gameId).orElseThrow(() -> new NotFoundException("Game not found"));
+        assertGamesAllowed(game.getRoom().getContext());
         if (!"GARTIC_PHONE".equals(game.getGameType())) {
             throw new BadRequestException("Drawing uploads are only for GARTIC_PHONE");
         }
@@ -1407,6 +1421,7 @@ public class GameService {
     @Transactional(readOnly = true)
     public byte[] getGarticDrawingAsset(UUID gameId, UUID requesterId, UUID assetId) {
         GameSession game = gameSessionRepository.findById(gameId).orElseThrow(() -> new NotFoundException("Game not found"));
+        assertGamesAllowed(game.getRoom().getContext());
         if (!roomParticipantRepository.existsByRoomIdAndUserId(game.getRoom().getId(), requesterId)) {
             throw new BadRequestException("User is not a participant of this room");
         }
@@ -1431,6 +1446,12 @@ public class GameService {
                 .status(session.getStatus())
                 .players(players)
                 .build();
+    }
+
+    private void assertGamesAllowed(String roomContext) {
+        if (!GAMES_ALLOWED_CONTEXT.equals(roomContext)) {
+            throw new BadRequestException("Games are available only in leisure rooms");
+        }
     }
 }
 

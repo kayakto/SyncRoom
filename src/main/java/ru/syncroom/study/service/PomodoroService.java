@@ -35,8 +35,8 @@ public class PomodoroService {
 
     private static final String TOPIC_TEMPLATE = "/topic/room/%s/pomodoro";
 
-    /** Помодоро доступен в учебных и рабочих комнатах (см. TZ модуль 4). */
-    private static final Set<String> POMODORO_ALLOWED_CONTEXTS = Set.of("study", "work");
+    /** Помодоро доступен только в учебной комнате. */
+    private static final Set<String> POMODORO_ALLOWED_CONTEXTS = Set.of("study");
 
     private final PomodoroSessionRepository pomodoroRepo;
     private final RoomRepository roomRepository;

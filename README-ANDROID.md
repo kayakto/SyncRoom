@@ -62,11 +62,12 @@
 
 ---
 
-## 2. Проектор: совместный просмотр видео
+## 2. Проектор: совместный просмотр видео (только leisure) + очередь
 
 ### 2.1. Концепция
 
-В каждой комнате может быть один активный «проектор»:
+Проектор доступен только в комнатах с `context = "leisure"`.
+В комнате может быть один активный слот проектора, но заявок может быть несколько (очередь).
 
 - **EMBED** — проигрывание готового видео по URL:
   - VK Video (`vk.com/video_ext.php?...`)
@@ -74,10 +75,14 @@
   - Прямые `.mp4`, `.webm`, `.m3u8` и т.п.
 - **STREAM** — живой RTMP-стрим (OBS / камера телефона → SRS медиасервер → HLS для зрителей).
 
-Любой участник комнаты может:
+Любой участник комнаты может отправить видео в очередь.
+Правила очереди:
 
-- включить проектор (становится хостом, старая сессия перезаписывается),
-- выключить проектор, если он сейчас хост.
+- у пользователя может быть только одна активная заявка (`PLAYING` или `WAITING`);
+- можно передать `durationSec`:
+  - `<= 42` — слот проигрывается до конца;
+  - `> 42` или пусто — слот ограничивается `42` сек;
+- после завершения своего слота пользователь может снова отправить ссылку.
 
 ---
 
@@ -92,14 +97,16 @@ Authorization: Bearer <accessToken>
 ### 3.1. Эндпоинты
 
 ```text
-GET    /api/rooms/{roomId}/projector      // текущее состояние проектора
-POST   /api/rooms/{roomId}/projector      // включить / перезапустить
+GET    /api/rooms/{roomId}/projector      // текущее состояние активного слота
+GET    /api/rooms/{roomId}/projector/queue // текущая очередь
+POST   /api/rooms/{roomId}/projector      // добавить в очередь (или стартовать, если пусто)
+POST   /api/rooms/{roomId}/projector/report // пожаловаться на текущий PLAYING-слот
 DELETE /api/rooms/{roomId}/projector      // выключить (только хост)
 
 POST   /api/projector/srs-callback        // внутренний HTTP callback от SRS (без JWT)
 ```
 
-### 3.2. Запуск EMBED-режима
+### 3.2. Добавление EMBED-видео в очередь
 
 ```http
 POST /api/rooms/{roomId}/projector
@@ -108,17 +115,19 @@ Content-Type: application/json
 {
   "mode": "EMBED",
   "videoUrl": "https://vk.com/video_ext.php?oid=-12345&id=67890",
-  "videoTitle": "Лекция по матану"
+  "videoTitle": "Лекция по матану",
+  "durationSec": 85
 }
 ```
 
 - пользователь должен быть участником комнаты;
 - `videoUrl` обязателен для EMBED;
 - при успешном вызове:
-  - в БД создаётся/обновляется запись `projector_sessions`,
-  - рассылается WebSocket-событие `PROJECTOR_STARTED` в `/topic/room/{roomId}/projector`.
+  - создаётся `queueItem`;
+  - если очередь пуста — заявка становится `PLAYING` и стартует проектор;
+  - если уже есть активный слот — заявка получает `WAITING`.
 
-### 3.3. Запуск STREAM-режима
+### 3.3. Добавление STREAM-заявки в очередь
 
 ```http
 POST /api/rooms/{roomId}/projector
@@ -126,7 +135,8 @@ Content-Type: application/json
 
 {
   "mode": "STREAM",
-  "videoTitle": "Стрим Полины"
+  "videoTitle": "Стрим Полины",
+  "durationSec": 20
 }
 ```
 
@@ -188,6 +198,41 @@ GET /api/rooms/{roomId}/projector
 
 Если запрос делает **зритель**, поле `rtmpUrl` будет `null`/отсутствовать.
 
+### 3.4.1. Получение очереди проектора
+
+```http
+GET /api/rooms/{roomId}/projector/queue
+```
+
+Пример ответа:
+
+```json
+{
+  "items": [
+    {
+      "queueItemId": "uuid-1",
+      "userId": "user-1",
+      "userName": "Alice",
+      "mode": "EMBED",
+      "videoUrl": "https://example.com/a.mp4",
+      "videoTitle": "A",
+      "slotDurationSec": 42,
+      "status": "PLAYING"
+    },
+    {
+      "queueItemId": "uuid-2",
+      "userId": "user-2",
+      "userName": "Bob",
+      "mode": "EMBED",
+      "videoUrl": "https://example.com/b.mp4",
+      "videoTitle": "B",
+      "slotDurationSec": 18,
+      "status": "WAITING"
+    }
+  ]
+}
+```
+
 ### 3.5. Выключение проектора
 
 ```http
@@ -196,6 +241,32 @@ DELETE /api/rooms/{roomId}/projector   → 204 No Content
 
 - может вызвать только текущий хост;
 - backend также автоматически выключает проектор, если хост выходит из комнаты.
+
+### 3.6. Жалоба на текущий ролик (dislike/report)
+
+```http
+POST /api/rooms/{roomId}/projector/report
+Authorization: Bearer <accessToken>
+```
+
+Правила:
+
+- жаловаться может только участник этой комнаты;
+- жалоба применяется к текущему `PLAYING` слоту;
+- хост не может пожаловаться на свой слот;
+- один пользователь учитывается не более одного раза на один слот;
+- при достижении порога (по умолчанию `2`) слот удаляется, приходит `REMOVED_BY_REPORTS`, и автоматически стартует следующий элемент очереди.
+
+Пример ответа:
+
+```json
+{
+  "queueItemId": "uuid",
+  "reportsCount": 2,
+  "threshold": 2,
+  "removed": true
+}
+```
 
 ---
 
@@ -236,7 +307,9 @@ URL: `ws://host:8080/ws-stomp`.
 - `PROJECTOR_STOPPED` — проектор выключен;
 - `PROJECTOR_CONTROL` — play/pause/seek (EMBED);
 - `STREAM_LIVE` — стрим пошёл в эфир (SRS `on_publish`);
-- `STREAM_OFFLINE` — стрим завершился (SRS `on_unpublish`).
+- `STREAM_OFFLINE` — стрим завершился (SRS `on_unpublish`);
+- `PROJECTOR_QUEUE_UPDATED` — очередь изменилась;
+- `REMOVED_BY_REPORTS` — текущий слот снят по порогу жалоб.
 
 ### 4.4. Управление EMBED с Android
 
@@ -440,7 +513,7 @@ fun sendProjectorControl(roomId: String, action: String, positionMs: Long) {
 
 ---
 
-## 6. Помодоро-таймер для комнат study и work
+## 6. Помодоро-таймер только для комнат study
 
 ### 6.1. REST API
 
@@ -453,7 +526,7 @@ POST   /api/rooms/{roomId}/pomodoro/skip
 DELETE /api/rooms/{roomId}/pomodoro
 ```
 
-- Доступно для `context = "study"` **и** `context = "work"`. В `sport` / `leisure` бекенд отвечает `400` («Pomodoro is not available…») на все перечисленные методы.
+- Доступно только для `context = "study"`. В `work` / `sport` / `leisure` бекенд отвечает `400` («Pomodoro is not available…») на все перечисленные методы.
 - Любой участник комнаты может запускать/останавливать таймер.
 - **Автосмена фазы на сервере:** раз в ~1 с бекенд ищет активные сессии (`WORK` / `BREAK` / `LONG_BREAK`), у которых `phaseEndAt` уже наступил, и переводит на следующую фазу — в WebSocket уходит тот же `POMODORO_PHASE_CHANGED`, что и при ручном `skip`, либо `POMODORO_STOPPED` при завершении цикла. Клиенту **не обязательно** вызывать `skip` по локальному таймеру: достаточно подписаться на топик и обновлять UI по событиям; `skip` остаётся для ручного «пропустить фазу». После рестарта сервера таймер в памяти сбрасывается, но фаза догонится за счёт этого механизма (пока сессия есть в БД).
 
@@ -632,7 +705,7 @@ DELETE /api/rooms/{roomId}/tasks/{taskId}/like
 ```
 
 - `GET .../tasks/all` — все цели **всех** участников с полями: `id`, `text`, `isDone`, `sortOrder`, `ownerId`, `ownerName`, `isBot`, `likeCount`, `likedByMe`.
-- `GET .../leaderboard` — массив по **всем** участникам комнаты, сортировка по убыванию `totalLikes`, затем по имени: `userId`, `userName`, `avatarUrl`, `totalLikes`, `completedTasks`, `totalTasks` (`totalLikes` — сколько лайков набрали **цели этого пользователя** в комнате).
+- `GET .../leaderboard` — массив по **всем** участникам комнаты, сортировка по убыванию `totalLikes`, затем по имени: `userId`, `userName`, `avatarUrl`, `totalLikes`, `completedTasks`, `totalTasks` (`totalLikes` — сколько лайков набрали **цели этого пользователя** в комнате). Для `context = "leisure"` endpoint возвращает `400`.
 - Лайкать можно только **чужие** цели; свой таск — `400`. Повторный `POST` like идемпотентен (второй раз без нового WS `TASK_LIKED`). `DELETE` like без лайка — `200`, `likedByMe: false`, без события `TASK_UNLIKED`.
 - Мотивационный бот целей: `POST .../bots/motivational-goals/activate` принимает `{ "goalCount": 1..10, "autoSuggest": true|false, "suggestOnBreak": true|false }`.
 - Ограничения активации бота: пользователь должен быть участником комнаты (`400` иначе), `goalCount` должен быть в диапазоне `1..10` (`400` иначе).
@@ -926,6 +999,8 @@ interface SyncRoomApi {
 ## 9. Игры (Quiplash) — инструкция для Android
 
 ### 9.1. REST API игр
+
+Игры доступны только в комнатах с `context = "leisure"`. Для остальных контекстов игровые endpoint-ы возвращают `400`.
 
 ```text
 POST /api/rooms/{roomId}/games

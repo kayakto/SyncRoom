@@ -8,10 +8,18 @@ import org.springframework.transaction.annotation.Transactional;
 import ru.syncroom.common.exception.BadRequestException;
 import ru.syncroom.common.exception.NotFoundException;
 import ru.syncroom.projector.config.SrsProperties;
+import ru.syncroom.projector.domain.ProjectorQueueItem;
+import ru.syncroom.projector.domain.ProjectorQueueReport;
 import ru.syncroom.projector.domain.ProjectorSession;
+import ru.syncroom.projector.dto.ProjectorEnqueueResponse;
+import ru.syncroom.projector.dto.ProjectorQueueItemResponse;
+import ru.syncroom.projector.dto.ProjectorQueueResponse;
+import ru.syncroom.projector.dto.ProjectorReportResponse;
 import ru.syncroom.projector.dto.ProjectorRequest;
 import ru.syncroom.projector.dto.ProjectorResponse;
 import ru.syncroom.projector.dto.UserDto;
+import ru.syncroom.projector.repository.ProjectorQueueItemRepository;
+import ru.syncroom.projector.repository.ProjectorQueueReportRepository;
 import ru.syncroom.projector.repository.ProjectorSessionRepository;
 import ru.syncroom.projector.ws.ProjectorEvent;
 import ru.syncroom.projector.ws.ProjectorEventType;
@@ -23,6 +31,11 @@ import ru.syncroom.users.repository.UserRepository;
 
 import java.util.Map;
 import java.util.UUID;
+import java.util.List;
+import java.util.Set;
+import java.util.HashMap;
+import java.util.concurrent.*;
+import org.springframework.beans.factory.annotation.Value;
 
 /**
  * Business logic for the Projector feature.
@@ -41,13 +54,24 @@ import java.util.UUID;
 public class ProjectorService {
 
     private static final String PROJECTOR_TOPIC = "/topic/room/%s/projector";
+    private static final String PROJECTOR_ALLOWED_CONTEXT = "leisure";
+    private static final int MAX_SLOT_SECONDS = 42;
+    private static final String WAITING = "WAITING";
+    private static final String PLAYING = "PLAYING";
+    private static final String DONE = "DONE";
 
     private final ProjectorSessionRepository projectorRepo;
+    private final ProjectorQueueItemRepository queueRepository;
+    private final ProjectorQueueReportRepository queueReportRepository;
     private final RoomRepository roomRepository;
     private final UserRepository userRepository;
     private final RoomParticipantRepository participantRepository;
     private final SimpMessagingTemplate messagingTemplate;
     private final SrsProperties srsProperties;
+    private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
+    private final ConcurrentHashMap<UUID, ScheduledFuture<?>> roomTimeouts = new ConcurrentHashMap<>();
+    @Value("${app.projector.report-threshold:2}")
+    private int reportThreshold;
 
     // ─── Helpers ────────────────────────────────────────────────────────────
 
@@ -59,12 +83,129 @@ public class ProjectorService {
         messagingTemplate.convertAndSend(projectorTopic(roomId), ProjectorEvent.of(type, payload));
     }
 
+    private void publishQueue(UUID roomId) {
+        Map<String, Object> payload = new HashMap<>();
+        List<ProjectorQueueItemResponse> items = queueRepository
+                .findByRoom_IdAndStatusInOrderByCreatedAtAsc(roomId, List.of(PLAYING, WAITING))
+                .stream()
+                .map(this::toQueueItemResponse)
+                .toList();
+        payload.put("items", items);
+        publish(roomId, ProjectorEventType.PROJECTOR_QUEUE_UPDATED, payload);
+    }
+
     private UserDto toUserDto(User u) {
         return UserDto.builder()
                 .id(u.getId().toString())
                 .name(u.getName())
                 .avatarUrl(u.getAvatarUrl())
                 .build();
+    }
+
+    private void assertProjectorAllowed(Room room) {
+        if (!PROJECTOR_ALLOWED_CONTEXT.equals(room.getContext())) {
+            throw new BadRequestException("Projector is available only in leisure rooms");
+        }
+    }
+
+    private int resolveSlotDuration(ProjectorRequest request) {
+        Integer durationSec = request.getDurationSec();
+        if (durationSec == null || durationSec <= 0) {
+            return MAX_SLOT_SECONDS;
+        }
+        return Math.min(durationSec, MAX_SLOT_SECONDS);
+    }
+
+    private ProjectorQueueItemResponse toQueueItemResponse(ProjectorQueueItem item) {
+        return ProjectorQueueItemResponse.builder()
+                .queueItemId(item.getId().toString())
+                .userId(item.getUser().getId().toString())
+                .userName(item.getUser().getName())
+                .mode(item.getMode())
+                .videoUrl(item.getVideoUrl())
+                .videoTitle(item.getVideoTitle())
+                .slotDurationSec(item.getSlotDurationSec())
+                .status(item.getStatus())
+                .build();
+    }
+
+    private void cancelRoomTimeout(UUID roomId) {
+        ScheduledFuture<?> future = roomTimeouts.remove(roomId);
+        if (future != null) {
+            future.cancel(false);
+        }
+    }
+
+    private void scheduleRoomTimeout(UUID roomId, int seconds) {
+        cancelRoomTimeout(roomId);
+        if (seconds <= 0) {
+            onSlotTimeout(roomId);
+            return;
+        }
+        ScheduledFuture<?> future = scheduler.schedule(() -> onSlotTimeout(roomId), seconds, TimeUnit.SECONDS);
+        roomTimeouts.put(roomId, future);
+    }
+
+    private void onSlotTimeout(UUID roomId) {
+        try {
+            completeCurrentAndPromote(roomId, "TIMEOUT");
+        } catch (Exception e) {
+            log.warn("Failed to advance projector queue for room {}: {}", roomId, e.getMessage());
+        }
+    }
+
+    private void startSessionFromQueueItem(ProjectorQueueItem item) {
+        UUID roomId = item.getRoom().getId();
+        projectorRepo.findByRoomId(roomId).ifPresent(projectorRepo::delete);
+        projectorRepo.flush();
+
+        ProjectorSession.ProjectorSessionBuilder sessionBuilder = ProjectorSession.builder()
+                .room(item.getRoom())
+                .host(item.getUser())
+                .mode(item.getMode())
+                .videoTitle(item.getVideoTitle())
+                .isPlaying(false)
+                .positionMs(0L)
+                .isLive(false);
+
+        if ("EMBED".equals(item.getMode())) {
+            sessionBuilder.videoUrl(item.getVideoUrl());
+        } else {
+            String streamKey = "room-" + roomId;
+            sessionBuilder.streamKey(streamKey).videoUrl(buildHlsUrl(streamKey));
+        }
+
+        ProjectorSession session = projectorRepo.save(sessionBuilder.build());
+        publish(roomId, ProjectorEventType.PROJECTOR_STARTED, buildStartedPayload(session));
+        scheduleRoomTimeout(roomId, item.getSlotDurationSec());
+    }
+
+    private void promoteNext(UUID roomId) {
+        var nextOpt = queueRepository.findFirstByRoom_IdAndStatusOrderByCreatedAtAsc(roomId, WAITING);
+        if (nextOpt.isEmpty()) {
+            cancelRoomTimeout(roomId);
+            projectorRepo.findByRoomId(roomId).ifPresent(projectorRepo::delete);
+            return;
+        }
+        var next = nextOpt.get();
+        next.setStatus(PLAYING);
+        next.setStartedAt(java.time.OffsetDateTime.now());
+        queueRepository.save(next);
+        startSessionFromQueueItem(next);
+    }
+
+    private void completeCurrentAndPromote(UUID roomId, String reason) {
+        queueRepository.findFirstByRoom_IdAndStatus(roomId, PLAYING).ifPresent(current -> {
+            current.setStatus(DONE);
+            current.setFinishedAt(java.time.OffsetDateTime.now());
+            queueRepository.save(current);
+            publish(roomId, ProjectorEventType.PROJECTOR_STOPPED, Map.of(
+                    "hostId", current.getUser().getId().toString(),
+                    "reason", reason
+            ));
+        });
+        promoteNext(roomId);
+        publishQueue(roomId);
     }
 
     private ProjectorResponse toResponse(ProjectorSession s, UUID requesterId) {
@@ -109,9 +250,28 @@ public class ProjectorService {
      */
     @Transactional(readOnly = true)
     public ProjectorResponse getProjector(UUID roomId, UUID requesterId) {
+        Room room = roomRepository.findById(roomId)
+                .orElseThrow(() -> new NotFoundException("Room not found"));
+        assertProjectorAllowed(room);
         ProjectorSession session = projectorRepo.findByRoomId(roomId)
                 .orElseThrow(() -> new NotFoundException("Projector is not active in this room"));
         return toResponse(session, requesterId);
+    }
+
+    @Transactional(readOnly = true)
+    public ProjectorQueueResponse getQueue(UUID roomId, UUID requesterId) {
+        Room room = roomRepository.findById(roomId)
+                .orElseThrow(() -> new NotFoundException("Room not found"));
+        assertProjectorAllowed(room);
+        if (!participantRepository.existsByRoomIdAndUserId(roomId, requesterId)) {
+            throw new ProjectorForbiddenException("You are not a participant of this room");
+        }
+        List<ProjectorQueueItemResponse> items = queueRepository
+                .findByRoom_IdAndStatusInOrderByCreatedAtAsc(roomId, List.of(PLAYING, WAITING))
+                .stream()
+                .map(this::toQueueItemResponse)
+                .toList();
+        return ProjectorQueueResponse.builder().items(items).build();
     }
 
     /**
@@ -119,9 +279,10 @@ public class ProjectorService {
      * If a session already exists it is overwritten — the caller becomes the new host.
      */
     @Transactional
-    public ProjectorResponse startProjector(UUID roomId, UUID userId, ProjectorRequest request) {
+    public ProjectorEnqueueResponse startProjector(UUID roomId, UUID userId, ProjectorRequest request) {
         Room room = roomRepository.findById(roomId)
                 .orElseThrow(() -> new NotFoundException("Room not found"));
+        assertProjectorAllowed(room);
 
         // Only room participants can start the projector
         if (!participantRepository.existsByRoomIdAndUserId(roomId, userId)) {
@@ -135,39 +296,46 @@ public class ProjectorService {
         if (!"EMBED".equals(mode) && !"STREAM".equals(mode)) {
             throw new BadRequestException("mode must be 'EMBED' or 'STREAM'");
         }
-
-        // Delete any existing session (upsert via delete+save — UNIQUE on room_id)
-        projectorRepo.findByRoomId(roomId).ifPresent(projectorRepo::delete);
-        projectorRepo.flush();
-
-        ProjectorSession.ProjectorSessionBuilder sessionBuilder = ProjectorSession.builder()
-                .room(room)
-                .host(host)
-                .mode(mode)
-                .videoTitle(request.getVideoTitle())
-                .isPlaying(false)
-                .positionMs(0L)
-                .isLive(false);
-
-        if ("EMBED".equals(mode)) {
-            if (request.getVideoUrl() == null || request.getVideoUrl().isBlank()) {
-                throw new BadRequestException("videoUrl is required for EMBED mode");
-            }
-            sessionBuilder.videoUrl(request.getVideoUrl());
-        } else {
-            // STREAM: generate stream key and HLS URL automatically
-            String streamKey = "room-" + roomId;
-            String hlsUrl = buildHlsUrl(streamKey);
-            sessionBuilder.streamKey(streamKey).videoUrl(hlsUrl);
+        if (queueRepository.existsByRoom_IdAndUser_IdAndStatusIn(roomId, userId, Set.of(WAITING, PLAYING))) {
+            throw new BadRequestException("User already has an active projector queue item");
+        }
+        if ("EMBED".equals(mode) && (request.getVideoUrl() == null || request.getVideoUrl().isBlank())) {
+            throw new BadRequestException("videoUrl is required for EMBED mode");
         }
 
-        ProjectorSession saved = projectorRepo.save(sessionBuilder.build());
-        log.debug("Projector started in room {} by user {} (mode={})", roomId, userId, mode);
+        var queueItem = queueRepository.save(ProjectorQueueItem.builder()
+                .room(room)
+                .user(host)
+                .mode(mode)
+                .videoUrl(request.getVideoUrl())
+                .videoTitle(request.getVideoTitle())
+                .requestedDurationSec(request.getDurationSec())
+                .slotDurationSec(resolveSlotDuration(request))
+                .status(WAITING)
+                .build());
 
-        // Notify all room participants
-        publish(roomId, ProjectorEventType.PROJECTOR_STARTED, buildStartedPayload(saved));
+        if (queueRepository.findFirstByRoom_IdAndStatus(roomId, PLAYING).isEmpty()) {
+            promoteNext(roomId);
+        }
+        publishQueue(roomId);
 
-        return toResponse(saved, userId);
+        int position = queueRepository.findByRoom_IdAndStatusInOrderByCreatedAtAsc(roomId, List.of(PLAYING, WAITING))
+                .stream()
+                .map(ProjectorQueueItem::getId)
+                .toList()
+                .indexOf(queueItem.getId()) + 1;
+        ProjectorResponse projector = projectorRepo.findByRoomId(roomId)
+                .map(s -> toResponse(s, userId))
+                .orElse(null);
+
+        String state = position == 1 ? PLAYING : "QUEUED";
+        return ProjectorEnqueueResponse.builder()
+                .queueItemId(queueItem.getId().toString())
+                .status(state)
+                .position(position)
+                .slotDurationSec(queueItem.getSlotDurationSec())
+                .projector(projector)
+                .build();
     }
 
     /**
@@ -175,6 +343,9 @@ public class ProjectorService {
      */
     @Transactional
     public void stopProjector(UUID roomId, UUID userId) {
+        Room room = roomRepository.findById(roomId)
+                .orElseThrow(() -> new NotFoundException("Room not found"));
+        assertProjectorAllowed(room);
         ProjectorSession session = projectorRepo.findByRoomId(roomId)
                 .orElseThrow(() -> new NotFoundException("Projector is not active in this room"));
 
@@ -182,10 +353,8 @@ public class ProjectorService {
             throw new ProjectorForbiddenException("Only the projector host can stop it");
         }
 
-        projectorRepo.delete(session);
+        completeCurrentAndPromote(roomId, "HOST_STOPPED");
         log.debug("Projector stopped in room {} by host {}", roomId, userId);
-
-        publish(roomId, ProjectorEventType.PROJECTOR_STOPPED, Map.of("hostId", userId.toString()));
     }
 
     /**
@@ -194,6 +363,9 @@ public class ProjectorService {
      */
     @Transactional
     public void handleControl(UUID roomId, UUID userId, String action, Long positionMs) {
+        Room room = roomRepository.findById(roomId)
+                .orElseThrow(() -> new NotFoundException("Room not found"));
+        assertProjectorAllowed(room);
         ProjectorSession session = projectorRepo.findByRoomId(roomId)
                 .orElseThrow(() -> new NotFoundException("Projector is not active in this room"));
 
@@ -261,11 +433,61 @@ public class ProjectorService {
     public void stopIfHost(UUID roomId, UUID userId) {
         projectorRepo.findByRoomId(roomId).ifPresent(session -> {
             if (session.getHost().getId().equals(userId)) {
-                projectorRepo.delete(session);
-                publish(roomId, ProjectorEventType.PROJECTOR_STOPPED, Map.of("hostId", userId.toString()));
+                completeCurrentAndPromote(roomId, "HOST_LEFT");
                 log.debug("Projector auto-stopped: host {} left room {}", userId, roomId);
             }
         });
+    }
+
+    @Transactional
+    public ProjectorReportResponse reportCurrent(UUID roomId, UUID reporterId) {
+        Room room = roomRepository.findById(roomId)
+                .orElseThrow(() -> new NotFoundException("Room not found"));
+        assertProjectorAllowed(room);
+        if (!participantRepository.existsByRoomIdAndUserId(roomId, reporterId)) {
+            throw new ProjectorForbiddenException("You are not a participant of this room");
+        }
+
+        ProjectorQueueItem current = queueRepository.findFirstByRoom_IdAndStatus(roomId, PLAYING)
+                .orElseThrow(() -> new NotFoundException("Projector is not active in this room"));
+
+        if (current.getUser().getId().equals(reporterId)) {
+            throw new BadRequestException("Host cannot report own projector slot");
+        }
+
+        if (!queueReportRepository.existsByQueueItem_IdAndReporter_Id(current.getId(), reporterId)) {
+            User reporter = userRepository.findById(reporterId)
+                    .orElseThrow(() -> new NotFoundException("User not found"));
+            queueReportRepository.save(ProjectorQueueReport.builder()
+                    .queueItem(current)
+                    .reporter(reporter)
+                    .build());
+        }
+
+        int reports = (int) queueReportRepository.countByQueueItem_Id(current.getId());
+        boolean removed = reports >= reportThreshold;
+        if (removed) {
+            Map<String, Object> payload = Map.of(
+                    "queueItemId", current.getId().toString(),
+                    "hostId", current.getUser().getId().toString(),
+                    "reportsCount", reports,
+                    "threshold", reportThreshold
+            );
+            publish(roomId, ProjectorEventType.REMOVED_BY_REPORTS, payload);
+            messagingTemplate.convertAndSendToUser(
+                    current.getUser().getId().toString(),
+                    "/queue/projector",
+                    ProjectorEvent.of(ProjectorEventType.REMOVED_BY_REPORTS, payload)
+            );
+            completeCurrentAndPromote(roomId, "REMOVED_BY_REPORTS");
+        }
+
+        return ProjectorReportResponse.builder()
+                .queueItemId(current.getId().toString())
+                .reportsCount(reports)
+                .threshold(reportThreshold)
+                .removed(removed)
+                .build();
     }
 
     // ─── Private helpers ─────────────────────────────────────────────────────

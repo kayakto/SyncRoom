@@ -121,6 +121,15 @@ class StudyTaskControllerTest {
                 .build());
     }
 
+    private Room createRoom(String context) {
+        return roomRepository.save(Room.builder()
+                .context(context)
+                .title(context + " room")
+                .maxParticipants(10)
+                .isActive(true)
+                .build());
+    }
+
     private void addParticipant(Room room, User u) {
         participantRepository.save(RoomParticipant.builder()
                 .room(room)
@@ -420,6 +429,18 @@ class StudyTaskControllerTest {
                 .andExpect(jsonPath("$[0].userId").value(rich.getId().toString()))
                 .andExpect(jsonPath("$[0].totalLikes").value(2))
                 .andExpect(jsonPath("$[1].totalLikes").value(0));
+    }
+
+    @Test
+    @DisplayName("GET /leaderboard — 400 в leisure-комнате")
+    void leaderboard_NotAvailableForLeisureRoom() throws Exception {
+        Room room = createRoom("leisure");
+        addParticipant(room, user);
+
+        mockMvc.perform(get("/api/rooms/{roomId}/leaderboard", room.getId())
+                        .header("Authorization", auth()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("not available")));
     }
 
     @Test
