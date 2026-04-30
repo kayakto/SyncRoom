@@ -6,6 +6,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import ru.syncroom.auth.client.ExternalOAuthClient;
+import ru.syncroom.auth.config.OAuthRedirectProperties;
 import ru.syncroom.auth.dto.AuthResponse;
 import ru.syncroom.auth.dto.RefreshResponse;
 import ru.syncroom.common.exception.BadRequestException;
@@ -17,6 +18,7 @@ import ru.syncroom.users.domain.User;
 import ru.syncroom.users.repository.UserRepository;
 
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -31,17 +33,19 @@ public class AuthService {
     private final JwtTokenService jwtTokenService;
     private final PasswordEncoder passwordEncoder;
     private final ExternalOAuthClient externalOAuthClient;
+    private final OAuthRedirectProperties oAuthRedirectProperties;
 
     /**
      * Authenticates user via OAuth provider (VK or Yandex).
      */
     @Transactional
-    public AuthResponse authenticateOAuth(String providerStr, String accessToken) {
+    public AuthResponse authenticateOAuth(String providerStr, String accessToken, String redirectUri) {
         AuthProvider provider = AuthProvider.fromString(providerStr);
         
         if (provider != AuthProvider.VK && provider != AuthProvider.YANDEX) {
             throw new BadRequestException("OAuth provider must be 'vk' or 'yandex'");
         }
+        validateRedirectUri(provider, redirectUri);
 
         // Fetch user profile from external provider
         ExternalOAuthClient.OAuthUserProfile profile = externalOAuthClient.getUserProfile(provider, accessToken);
@@ -67,6 +71,20 @@ public class AuthService {
         String jwtRefreshToken = jwtTokenService.generateRefreshToken(user.getId());
 
         return buildAuthResponse(jwtAccessToken, jwtRefreshToken, isFirstLogin, user);
+    }
+
+    private void validateRedirectUri(AuthProvider provider, String redirectUri) {
+        if (redirectUri == null || redirectUri.isBlank()) {
+            return;
+        }
+        List<String> allowed = switch (provider) {
+            case VK -> oAuthRedirectProperties.getVkAllowedRedirectUris();
+            case YANDEX -> oAuthRedirectProperties.getYandexAllowedRedirectUris();
+            default -> List.of();
+        };
+        if (allowed == null || allowed.isEmpty() || !allowed.contains(redirectUri)) {
+            throw new BadRequestException("OAuth redirect_uri is not allowed");
+        }
     }
 
     /**
@@ -127,6 +145,9 @@ public class AuthService {
      */
     @Transactional
     public RefreshResponse refresh(String refreshToken) {
+        if (refreshToken == null || refreshToken.isBlank()) {
+            throw new UnauthorizedException("Refresh token is required");
+        }
         if (!jwtTokenService.isRefreshToken(refreshToken)) {
             throw new UnauthorizedException("Invalid refresh token");
         }

@@ -6,11 +6,20 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import ru.syncroom.common.exception.BadRequestException;
 import ru.syncroom.common.exception.NotFoundException;
+import ru.syncroom.study.domain.StudyTask;
+import ru.syncroom.study.repository.StudyTaskRepository;
+import ru.syncroom.study.repository.TaskLikeRepository;
 import ru.syncroom.users.domain.User;
+import ru.syncroom.users.dto.CompletedGoalResponse;
 import ru.syncroom.users.dto.ProfileResponse;
 import ru.syncroom.users.dto.UpdateProfileRequest;
+import ru.syncroom.users.dto.UserStatsResponse;
 import ru.syncroom.users.repository.UserRepository;
 
+import java.time.DayOfWeek;
+import java.time.OffsetDateTime;
+import java.time.temporal.TemporalAdjusters;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -22,6 +31,8 @@ import java.util.UUID;
 public class UserService {
 
     private final UserRepository userRepository;
+    private final StudyTaskRepository studyTaskRepository;
+    private final TaskLikeRepository taskLikeRepository;
 
     /**
      * Gets user profile by ID.
@@ -80,6 +91,45 @@ public class UserService {
                 .email(user.getEmail())
                 .provider(user.getProvider().getValue())
                 .avatarUrl(user.getAvatarUrl())
+                .build();
+    }
+
+    @Transactional(readOnly = true)
+    public UserStatsResponse getStats(UUID userId) {
+        // keep same behavior as profile endpoint: 404 if user doesn't exist
+        userRepository.findById(userId).orElseThrow(() -> new NotFoundException("User not found"));
+
+        OffsetDateTime now = OffsetDateTime.now();
+        OffsetDateTime dayStart = now.toLocalDate().atStartOfDay().atOffset(now.getOffset());
+        OffsetDateTime weekStart = dayStart.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY));
+
+        long completedToday = studyTaskRepository.countByUser_IdAndIsDoneTrueAndUpdatedAtGreaterThanEqual(userId, dayStart);
+        long completedThisWeek = studyTaskRepository.countByUser_IdAndIsDoneTrueAndUpdatedAtGreaterThanEqual(userId, weekStart);
+        long completedTotal = studyTaskRepository.countByUser_IdAndIsDoneTrue(userId);
+        long totalLikesReceived = taskLikeRepository.countLikesOnTasksOwnedByUser(userId);
+
+        List<CompletedGoalResponse> recentCompletedGoals = studyTaskRepository
+                .findTop20ByUser_IdAndIsDoneTrueOrderByUpdatedAtDesc(userId)
+                .stream()
+                .map(this::toCompletedGoalResponse)
+                .toList();
+
+        return UserStatsResponse.builder()
+                .completedToday(completedToday)
+                .completedThisWeek(completedThisWeek)
+                .completedTotal(completedTotal)
+                .totalLikesReceived(totalLikesReceived)
+                .recentCompletedGoals(recentCompletedGoals)
+                .build();
+    }
+
+    private CompletedGoalResponse toCompletedGoalResponse(StudyTask task) {
+        return CompletedGoalResponse.builder()
+                .id(task.getId())
+                .text(task.getText())
+                .roomId(task.getRoom().getId())
+                .roomTitle(task.getRoom().getTitle())
+                .completedAt(task.getUpdatedAt())
                 .build();
     }
 }

@@ -54,6 +54,15 @@ DB_PASSWORD=syncroom
 JWT_SECRET=your-secret-min-32-chars
 JWT_ACCESS_EXPIRATION=900000       # 15 минут
 JWT_REFRESH_EXPIRATION=2592000000  # 30 дней
+APP_CORS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+APP_AUTH_COOKIES_ACCESS_TOKEN_NAME=SR_ACCESS_TOKEN
+APP_AUTH_COOKIES_REFRESH_TOKEN_NAME=SR_REFRESH_TOKEN
+APP_AUTH_COOKIES_DOMAIN=
+APP_AUTH_COOKIES_PATH=/
+APP_AUTH_COOKIES_SECURE=false
+APP_AUTH_COOKIES_SAME_SITE=Lax
+APP_AUTH_OAUTH_VK_ALLOWED_REDIRECT_URIS=http://localhost:5173/auth/callback
+APP_AUTH_OAUTH_YANDEX_ALLOWED_REDIRECT_URIS=http://localhost:5173/auth/callback
 REDIS_HOST=localhost               # опционально
 REDIS_PORT=6379                    # опционально
 APP_PORT=8080
@@ -143,8 +152,19 @@ OLLAMA_VISION_MODEL=llava:7b
 |-------|-----|----------|
 | POST | `/api/auth/register` | Регистрация email |
 | POST | `/api/auth/email` | Вход email/password |
-| POST | `/api/auth/oauth` | Вход через VK / Yandex |
-| POST | `/api/auth/refresh` | Обновление токенов |
+| POST | `/api/auth/oauth` | Вход через VK / Yandex (опц. `redirectUri`) |
+| POST | `/api/auth/refresh` | Обновление токенов (из body или cookie) |
+| GET | `/api/auth/csrf` | Выдать CSRF токен для web-клиента |
+| POST | `/api/auth/logout` | Очистить auth cookies |
+
+**Web auth flow (cookie + CSRF):**
+
+- login/register/oauth/refresh ставят `HttpOnly` cookies: `SR_ACCESS_TOKEN`, `SR_REFRESH_TOKEN` (имена настраиваются через env);
+- для браузера можно работать без хранения JWT в `localStorage`:
+  1. `GET /api/auth/csrf` (получить `XSRF-TOKEN`);
+  2. отправлять state-changing запросы с `X-XSRF-TOKEN`;
+  3. `withCredentials: true` на клиенте;
+- для мобильных и других non-browser клиентов bearer flow сохранён: `Authorization: Bearer <accessToken>`.
 
 ### Профиль пользователя
 
@@ -621,7 +641,12 @@ gradle test
 - Access token: 15 минут | Refresh token: 30 дней
 - Пароли: BCrypt
 - WebSocket auth: JWT в STOMP CONNECT frame (через `ChannelInterceptor`)
-- CORS: разрешены все origins для dev-среды (`CorsConfigurationSource`)
+- CORS: allowlist origin-ов через `APP_CORS_ALLOWED_ORIGINS` (используется и для REST, и для WS handshake)
+- Web cookie auth: `HttpOnly` cookies (`SameSite=Lax`, `Secure` настраивается через env)
+- CSRF для web-клиентов: `CookieCsrfTokenRepository`, endpoint `GET /api/auth/csrf`, header `X-XSRF-TOKEN`
+- OAuth redirect URI allowlist:
+  - `APP_AUTH_OAUTH_VK_ALLOWED_REDIRECT_URIS`
+  - `APP_AUTH_OAUTH_YANDEX_ALLOWED_REDIRECT_URIS`
 
 ---
 

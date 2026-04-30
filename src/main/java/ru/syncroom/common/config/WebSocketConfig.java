@@ -43,6 +43,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     private static final int WS_MESSAGE_LIMIT_BYTES = 2 * 1024 * 1024;
 
     private final ObjectMapper objectMapper;
+    private final AppCorsProperties appCorsProperties;
 
     /**
      * Используем тот же ObjectMapper, что и REST (JavaTimeModule и т.д.), иначе
@@ -79,13 +80,13 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
         // URL: ws://localhost:8080/ws-stomp
         registry
                 .addEndpoint("/ws-stomp")
-                .setAllowedOriginPatterns("*");
+                .setAllowedOrigins(appCorsProperties.getAllowedOrigins().toArray(String[]::new));
 
         // SockJS fallback for web browser clients
         // URL: ws://localhost:8080/ws/websocket  (or http:// for SockJS polling)
         registry
                 .addEndpoint("/ws")
-                .setAllowedOriginPatterns("*")
+                .setAllowedOrigins(appCorsProperties.getAllowedOrigins().toArray(String[]::new))
                 .withSockJS();
     }
 }

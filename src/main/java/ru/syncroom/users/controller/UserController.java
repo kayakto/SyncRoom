@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.*;
 import ru.syncroom.users.domain.User;
 import ru.syncroom.users.dto.ProfileResponse;
 import ru.syncroom.users.dto.UpdateProfileRequest;
+import ru.syncroom.users.dto.UserStatsResponse;
 import ru.syncroom.users.service.UserService;
 
 /**
@@ -64,5 +65,19 @@ public class UserController {
     ) {
         ProfileResponse updatedProfile = userService.updateProfile(user.getId(), request);
         return ResponseEntity.ok(updatedProfile);
+    }
+
+    @Operation(
+            summary = "Получить статистику текущего пользователя",
+            description = "Возвращает агрегированную статистику по выполненным целям и лайкам, а также недавнюю историю выполненных целей."
+    )
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Статистика успешно получена"),
+            @ApiResponse(responseCode = "401", description = "Не авторизован"),
+            @ApiResponse(responseCode = "404", description = "Пользователь не найден")
+    })
+    @GetMapping("/me/stats")
+    public ResponseEntity<UserStatsResponse> getCurrentUserStats(@AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(userService.getStats(user.getId()));
     }
 }

@@ -14,8 +14,10 @@
 - **Auth** — JWT авторизация:
   - `POST /api/auth/email`
   - `POST /api/auth/register`
-  - `POST /api/auth/oauth`
+  - `POST /api/auth/oauth` (`redirectUri` опционально, обязателен для web OAuth-flow)
   - `POST /api/auth/refresh`
+  - `GET /api/auth/csrf` (для web-клиента)
+  - `POST /api/auth/logout` (для web-клиента)
   - Ответ:
     ```json
     { "accessToken": "eyJ...", "refreshToken": "eyJ...", "isFirstLogin": true }
@@ -37,6 +39,26 @@
   - В `RoomResponse`: **`participantCount`** = за столом (занятые места), **`observerCount`** = в комнате без места; в `ParticipantResponse` поле **`role`**: `OBSERVER` | `PARTICIPANT`.
 
 Ниже подробно описаны **проектор**, **помодоро** и **учебные таски**.
+
+### 1.1. Важно про web auth (чтобы не сломать Android)
+
+- Backend поддерживает **два режима одновременно**:
+  - `Bearer` в `Authorization` (основной для Android; без изменений);
+  - `HttpOnly` cookies + CSRF (основной для web).
+- При `email/register/oauth/refresh` backend теперь дополнительно ставит cookies:
+  - `SR_ACCESS_TOKEN`
+  - `SR_REFRESH_TOKEN`
+- Android-приложение может продолжать работать как раньше, через токены из JSON-ответа.
+- Для web OAuth рекомендуется передавать `redirectUri` в `/api/auth/oauth`; backend валидирует его по allowlist.
+
+Пример OAuth запроса с redirect:
+```json
+{
+  "provider": "vk",
+  "accessToken": "vk_access_token_123",
+  "redirectUri": "http://localhost:5173/auth/callback"
+}
+```
 
 ---
 

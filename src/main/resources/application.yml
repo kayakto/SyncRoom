@@ -66,3 +66,21 @@ games:
   gartic:
     text-timeout-sec: ${GAMES_GARTIC_TEXT_TIMEOUT_SEC:60}
     draw-timeout-sec: ${GAMES_GARTIC_DRAW_TIMEOUT_SEC:180}
+
+app:
+  cors:
+    # Comma-separated env override is supported by Spring for list properties:
+    # APP_CORS_ALLOWED_ORIGINS=http://localhost:5173,http://web.local:5173
+    allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:http://localhost:5173,http://127.0.0.1:5173}
+  auth:
+    cookies:
+      access-token-name: ${APP_AUTH_COOKIES_ACCESS_TOKEN_NAME:SR_ACCESS_TOKEN}
+      refresh-token-name: ${APP_AUTH_COOKIES_REFRESH_TOKEN_NAME:SR_REFRESH_TOKEN}
+      domain: ${APP_AUTH_COOKIES_DOMAIN:}
+      path: ${APP_AUTH_COOKIES_PATH:/}
+      secure: ${APP_AUTH_COOKIES_SECURE:false}
+      same-site: ${APP_AUTH_COOKIES_SAME_SITE:Lax}
+    oauth:
+      # Set exact callback URLs used by web/oauth clients
+      vk-allowed-redirect-uris: ${APP_AUTH_OAUTH_VK_ALLOWED_REDIRECT_URIS:http://localhost:5173/auth/callback}
+      yandex-allowed-redirect-uris: ${APP_AUTH_OAUTH_YANDEX_ALLOWED_REDIRECT_URIS:http://localhost:5173/auth/callback}

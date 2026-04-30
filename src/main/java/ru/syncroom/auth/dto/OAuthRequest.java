@@ -18,4 +18,7 @@ public class OAuthRequest {
     @Schema(description = "Access token от внешнего провайдера", example = "vk_access_token_12345")
     @NotBlank(message = "Access token is required")
     private String accessToken;
+
+    @Schema(description = "Redirect URI, использованный на клиенте при OAuth (должен быть в allowlist бэкенда)", example = "http://localhost:5173/auth/callback")
+    private String redirectUri;
 }

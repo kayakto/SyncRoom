@@ -13,6 +13,12 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
 import ru.syncroom.common.security.JwtTokenService;
+import ru.syncroom.rooms.domain.Room;
+import ru.syncroom.rooms.repository.RoomRepository;
+import ru.syncroom.study.domain.StudyTask;
+import ru.syncroom.study.domain.TaskLike;
+import ru.syncroom.study.repository.StudyTaskRepository;
+import ru.syncroom.study.repository.TaskLikeRepository;
 import ru.syncroom.users.domain.AuthProvider;
 import ru.syncroom.users.domain.User;
 import ru.syncroom.users.repository.UserRepository;
@@ -44,6 +50,15 @@ class UserControllerTest {
 
     @Autowired
     private UserRepository userRepository;
+
+    @Autowired
+    private RoomRepository roomRepository;
+
+    @Autowired
+    private StudyTaskRepository studyTaskRepository;
+
+    @Autowired
+    private TaskLikeRepository taskLikeRepository;
 
     @Autowired
     private JwtTokenService jwtTokenService;
@@ -254,5 +269,66 @@ class UserControllerTest {
                         .content(requestBody))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.avatarUrl").isEmpty());
+    }
+
+    @Test
+    @DisplayName("GET /api/users/me/stats - успешное получение статистики")
+    void testGetCurrentStats_Success() throws Exception {
+        Room room = roomRepository.save(Room.builder()
+                .context("study")
+                .title("Study Room")
+                .maxParticipants(10)
+                .isActive(true)
+                .build());
+
+        StudyTask doneToday1 = studyTaskRepository.save(StudyTask.builder()
+                .user(testUser)
+                .room(room)
+                .text("Task done today 1")
+                .isDone(true)
+                .sortOrder(0)
+                .build());
+        StudyTask doneToday2 = studyTaskRepository.save(StudyTask.builder()
+                .user(testUser)
+                .room(room)
+                .text("Task done today 2")
+                .isDone(true)
+                .sortOrder(1)
+                .build());
+        StudyTask inProgress = studyTaskRepository.save(StudyTask.builder()
+                .user(testUser)
+                .room(room)
+                .text("Task not done")
+                .isDone(false)
+                .sortOrder(2)
+                .build());
+
+        User liker = userRepository.save(User.builder()
+                .name("Liker User")
+                .email("liker@example.com")
+                .provider(AuthProvider.EMAIL)
+                .passwordHash("hashed")
+                .createdAt(OffsetDateTime.now())
+                .build());
+
+        taskLikeRepository.save(TaskLike.builder().task(doneToday1).user(liker).build());
+        taskLikeRepository.save(TaskLike.builder().task(doneToday2).user(liker).build());
+
+        mockMvc.perform(get("/api/users/me/stats")
+                        .header("Authorization", getAuthHeader()))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.completedToday").value(2))
+                .andExpect(jsonPath("$.completedThisWeek").value(greaterThanOrEqualTo(2)))
+                .andExpect(jsonPath("$.completedTotal").value(2))
+                .andExpect(jsonPath("$.totalLikesReceived").value(2))
+                .andExpect(jsonPath("$.recentCompletedGoals", hasSize(2)))
+                .andExpect(jsonPath("$.recentCompletedGoals[0].text", anyOf(
+                        is("Task done today 1"), is("Task done today 2")
+                )))
+                .andExpect(jsonPath("$.recentCompletedGoals[1].text", anyOf(
+                        is("Task done today 1"), is("Task done today 2")
+                )))
+                .andExpect(jsonPath("$.recentCompletedGoals[*].text", not(hasItem("Task not done"))));
     }
 }
