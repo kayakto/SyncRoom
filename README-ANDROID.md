@@ -60,6 +60,32 @@
 }
 ```
 
+### 1.2. Web Push (для web-клиента, чтобы Android понимал интеграцию)
+
+Для браузерной версии backend поддерживает минимальный push API:
+
+- `GET /api/push/vapid-public-key` — выдаёт VAPID public key в `text/plain`;
+- `POST /api/push/subscribe` — сохраняет subscription:
+  ```json
+  {
+    "endpoint": "https://fcm.googleapis.com/fcm/send/...",
+    "keys": {
+      "p256dh": "...",
+      "auth": "..."
+    }
+  }
+  ```
+- `POST /api/push/unsubscribe` — удаляет subscription:
+  ```json
+  { "endpoint": "https://fcm.googleapis.com/fcm/send/..." }
+  ```
+
+Иконки для web/PWA лежат в статике backend:
+
+- `/icons/icon-192.png`
+- `/icons/icon-512.png`
+- `/icons/icon-mask.png`
+
 ---
 
 ## 2. Проектор: совместный просмотр видео (только leisure) + очередь

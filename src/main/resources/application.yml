@@ -86,3 +86,5 @@ app:
       yandex-allowed-redirect-uris: ${APP_AUTH_OAUTH_YANDEX_ALLOWED_REDIRECT_URIS:http://localhost:5173/auth/callback}
   projector:
     report-threshold: ${APP_PROJECTOR_REPORT_THRESHOLD:2}
+  push:
+    vapid-public-key: ${APP_PUSH_VAPID_PUBLIC_KEY:dev-vapid-public-key-placeholder}

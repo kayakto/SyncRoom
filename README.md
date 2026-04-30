@@ -64,6 +64,7 @@ APP_AUTH_COOKIES_SAME_SITE=Lax
 APP_AUTH_OAUTH_VK_ALLOWED_REDIRECT_URIS=http://localhost:5173/auth/callback
 APP_AUTH_OAUTH_YANDEX_ALLOWED_REDIRECT_URIS=http://localhost:5173/auth/callback
 APP_PROJECTOR_REPORT_THRESHOLD=2
+APP_PUSH_VAPID_PUBLIC_KEY=your-vapid-public-key
 REDIS_HOST=localhost               # опционально
 REDIS_PORT=6379                    # опционально
 APP_PORT=8080
@@ -166,6 +167,27 @@ OLLAMA_VISION_MODEL=llava:7b
   2. отправлять state-changing запросы с `X-XSRF-TOKEN`;
   3. `withCredentials: true` на клиенте;
 - для мобильных и других non-browser клиентов bearer flow сохранён: `Authorization: Bearer <accessToken>`.
+
+### Web Push (PWA / browser)
+
+| Метод | URL | Описание |
+|-------|-----|----------|
+| GET | `/api/push/vapid-public-key` | Получить публичный VAPID ключ (`text/plain`) |
+| POST | `/api/push/subscribe` | Сохранить push-подписку браузера (`endpoint`, `keys.p256dh`, `keys.auth`) |
+| POST | `/api/push/unsubscribe` | Удалить push-подписку по `endpoint` |
+
+Минимальный flow:
+
+1. Web-клиент вызывает `GET /api/push/vapid-public-key`.
+2. Через Service Worker делает `pushManager.subscribe(...)`.
+3. Отправляет подписку в `POST /api/push/subscribe`.
+4. При отключении уведомлений/логауте вызывает `POST /api/push/unsubscribe`.
+
+Иконки для web-манифеста/уведомлений лежат в статике backend:
+
+- `/icons/icon-192.png`
+- `/icons/icon-512.png`
+- `/icons/icon-mask.png`
 
 ### Профиль пользователя
 
@@ -677,6 +699,7 @@ V12 — таблица task_like (лайки на study_tasks)
 V18 — room_bot, bot_goal_template и seed MotivBot/шаблонов целей
 V20 — projector_queue_items (очередь проектора: WAITING/PLAYING/DONE)
 V21 — projector_queue_reports (жалобы на слот проектора, уникальность queueItem+reporter)
+V22 — push_subscriptions (web push подписки: endpoint + p256dh + auth)
 ```
 
 ---
