@@ -30,6 +30,11 @@ public interface TaskLikeRepository extends JpaRepository<TaskLike, UUID> {
     @Query("select count(l) from TaskLike l where l.task.user.id = :ownerId and l.task.room.id = :roomId")
     long countLikesOnTasksOwnedByUserInRoom(@Param("ownerId") UUID ownerId, @Param("roomId") UUID roomId);
 
+    @Query("select count(l) from TaskLike l where l.task.ownerSeatBot.id = :ownerBotId and l.task.room.id = :roomId")
+    long countLikesOnTasksOwnedBySeatBotInRoom(@Param("ownerBotId") UUID ownerBotId, @Param("roomId") UUID roomId);
+
     @Query("select count(l) from TaskLike l where l.task.user.id = :ownerId")
     long countLikesOnTasksOwnedByUser(@Param("ownerId") UUID ownerId);
+
+    boolean existsByTask_IdAndLikerSeatBot_Id(UUID taskId, UUID likerSeatBotId);
 }

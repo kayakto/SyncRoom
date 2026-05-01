@@ -9,8 +9,10 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ru.syncroom.common.security.JwtTokenService;
 import ru.syncroom.rooms.domain.ParticipantRole;
 import ru.syncroom.rooms.domain.Room;
@@ -22,12 +24,14 @@ import ru.syncroom.rooms.ws.SeatLeftPayload;
 import ru.syncroom.rooms.ws.SeatTakenPayload;
 import ru.syncroom.rooms.repository.RoomParticipantRepository;
 import ru.syncroom.rooms.repository.RoomRepository;
+import ru.syncroom.rooms.repository.RoomSeatBotRepository;
 import ru.syncroom.rooms.repository.SeatRepository;
 import ru.syncroom.users.domain.AuthProvider;
 import ru.syncroom.users.domain.User;
 import ru.syncroom.users.repository.UserRepository;
 
 import java.time.OffsetDateTime;
+import java.util.Map;
 
 import static org.hamcrest.Matchers.*;
 import static org.junit.jupiter.api.Assertions.*;
@@ -54,8 +58,10 @@ class SeatControllerTest {
     @Autowired private UserRepository userRepository;
     @Autowired private RoomRepository roomRepository;
     @Autowired private RoomParticipantRepository participantRepository;
+    @Autowired private RoomSeatBotRepository roomSeatBotRepository;
     @Autowired private SeatRepository seatRepository;
     @Autowired private JwtTokenService jwtTokenService;
+    @Autowired private ObjectMapper objectMapper;
 
     /** Mock WS broker — avoids needing a real STOMP/Redis broker */
     @MockitoBean private SimpMessagingTemplate messagingTemplate;
@@ -96,8 +102,9 @@ class SeatControllerTest {
 
     @BeforeEach
     void setUp() {
-        seatRepository.deleteAll();
         participantRepository.deleteAll();
+        roomSeatBotRepository.deleteAll();
+        seatRepository.deleteAll();
         roomRepository.deleteAll();
         userRepository.deleteAll();
 
@@ -204,6 +211,23 @@ class SeatControllerTest {
     // ─────────────────────────────────────────────────────────────────────────
     // POST /sit — 409 conflict
     // ─────────────────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("POST /sit — место занято seat-ботом → 409")
+    void testSit_BotOccupied_Conflict() throws Exception {
+        String body = objectMapper.writeValueAsString(Map.of("botType", "WORK_FOCUS_BUDDY"));
+        mockMvc.perform(post("/api/rooms/{roomId}/seats/{seatId}/bot", testRoom.getId(), freeSeat.getId())
+                        .header("Authorization", authHeader(testUser))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/rooms/{roomId}/seats/{seatId}/sit",
+                        testRoom.getId(), freeSeat.getId())
+                        .header("Authorization", authHeader(testUser)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value(containsString("bot")));
+    }
 
     @Test
     @DisplayName("POST /sit — место занято другим пользователем → 409")

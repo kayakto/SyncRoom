@@ -13,11 +13,16 @@ import java.util.UUID;
 
 public interface RoomParticipantRepository extends JpaRepository<RoomParticipant, UUID> {
 
+    @Query("SELECT COUNT(p) FROM RoomParticipant p WHERE p.room.id = :roomId AND p.user IS NOT NULL")
+    int countHumanParticipantsByRoomId(@Param("roomId") UUID roomId);
+
     int countByRoomId(UUID roomId);
 
     boolean existsByRoomIdAndUserId(UUID roomId, UUID userId);
 
     Optional<RoomParticipant> findByRoomIdAndUserId(UUID roomId, UUID userId);
+
+    Optional<RoomParticipant> findBySeatBot_Id(UUID seatBotId);
 
     List<RoomParticipant> findByRoomId(UUID roomId);
 

@@ -15,6 +15,7 @@ import ru.syncroom.rooms.domain.Seat;
 import ru.syncroom.rooms.dto.SeatDto;
 import ru.syncroom.rooms.repository.RoomParticipantRepository;
 import ru.syncroom.rooms.repository.RoomRepository;
+import ru.syncroom.rooms.repository.RoomSeatBotRepository;
 import ru.syncroom.rooms.repository.SeatRepository;
 import ru.syncroom.rooms.ws.RoomEvent;
 import ru.syncroom.rooms.ws.RoomEventType;
@@ -43,6 +44,7 @@ public class SeatService {
     private final SeatRepository seatRepository;
     private final RoomRepository roomRepository;
     private final RoomParticipantRepository participantRepository;
+    private final RoomSeatBotRepository roomSeatBotRepository;
     private final UserRepository userRepository;
     private final SimpMessagingTemplate messagingTemplate;
 
@@ -65,6 +67,7 @@ public class SeatService {
                         .id(user.getId().toString())
                         .name(user.getName())
                         .avatarUrl(user.getAvatarUrl())
+                        .isBot(false)
                         .build())
                 .participantCount(participantCount)
                 .observerCount(observerCount)
@@ -126,9 +129,12 @@ public class SeatService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new NotFoundException("User not found"));
 
-        // If the seat is taken by a DIFFERENT user → 409
+        // If the seat is taken by a DIFFERENT user or a bot → 409
         if (seat.getOccupiedBy() != null && !seat.getOccupiedBy().getId().equals(userId)) {
             throw new SeatConflictException("Seat is already occupied by another user");
+        }
+        if (roomSeatBotRepository.findBySeat_Id(seatId).isPresent()) {
+            throw new SeatConflictException("Seat is occupied by a bot");
         }
 
         // If seat is already theirs → idempotent, just return

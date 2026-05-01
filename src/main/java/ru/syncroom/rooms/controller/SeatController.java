@@ -8,7 +8,10 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
+import jakarta.validation.Valid;
+import ru.syncroom.rooms.dto.SeatBotPlaceRequest;
 import ru.syncroom.rooms.dto.SeatDto;
+import ru.syncroom.rooms.service.SeatBotService;
 import ru.syncroom.rooms.service.SeatService;
 import ru.syncroom.users.domain.User;
 
@@ -29,6 +32,7 @@ import java.util.UUID;
 public class SeatController {
 
     private final SeatService seatService;
+    private final SeatBotService seatBotService;
 
     /**
      * POST /api/rooms/{roomId}/seats/{seatId}/sit
@@ -79,5 +83,36 @@ public class SeatController {
             @AuthenticationPrincipal User currentUser
     ) {
         return seatService.standUp(roomId, seatId, currentUser.getId());
+    }
+
+    @Operation(summary = "Посадить seat-бота на место")
+    @PostMapping("/{seatId}/bot")
+    public SeatDto placeBot(
+            @PathVariable UUID roomId,
+            @PathVariable UUID seatId,
+            @AuthenticationPrincipal User currentUser,
+            @Valid @RequestBody SeatBotPlaceRequest body
+    ) {
+        return seatBotService.placeBot(roomId, seatId, body.getBotType(), currentUser.getId());
+    }
+
+    @Operation(summary = "Снять seat-бота с места")
+    @DeleteMapping("/{seatId}/bot")
+    public SeatDto removeBot(
+            @PathVariable UUID roomId,
+            @PathVariable UUID seatId,
+            @AuthenticationPrincipal User currentUser
+    ) {
+        return seatBotService.removeBotFromSeat(roomId, seatId, currentUser.getId());
+    }
+
+    @Operation(summary = "Снять seat-бота с места (алиас)")
+    @PostMapping("/{seatId}/bot/leave")
+    public SeatDto removeBotPost(
+            @PathVariable UUID roomId,
+            @PathVariable UUID seatId,
+            @AuthenticationPrincipal User currentUser
+    ) {
+        return seatBotService.removeBotFromSeat(roomId, seatId, currentUser.getId());
     }
 }

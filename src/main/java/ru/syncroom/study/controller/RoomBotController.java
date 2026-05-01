@@ -16,7 +16,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import java.util.List;
 import java.util.UUID;
 
-@Tag(name = "RoomBots", description = "Боты для комнаты")
+@Tag(name = "RoomBots", description = "Боты для комнаты (deprecated: используйте seat-bots)")
 @RestController
 @RequiredArgsConstructor
 public class RoomBotController {
@@ -26,7 +26,7 @@ public class RoomBotController {
 
     @PostMapping("/api/rooms/{roomId}/bots/motivational-goals/activate")
     @SecurityRequirement(name = "Bearer Authentication")
-    @Operation(summary = "Активировать мотивационного бота целей")
+    @Operation(summary = "Активировать мотивационного бота целей", deprecated = true)
     public RoomBotResponse activate(
             @PathVariable UUID roomId,
             @AuthenticationPrincipal User currentUser,
@@ -39,7 +39,7 @@ public class RoomBotController {
 
     @DeleteMapping("/api/rooms/{roomId}/bots/motivational-goals/deactivate")
     @SecurityRequirement(name = "Bearer Authentication")
-    @Operation(summary = "Деактивировать мотивационного бота целей")
+    @Operation(summary = "Деактивировать мотивационного бота целей", deprecated = true)
     public RoomBotResponse deactivate(
             @PathVariable UUID roomId,
             @AuthenticationPrincipal User currentUser
@@ -51,7 +51,7 @@ public class RoomBotController {
 
     @GetMapping("/api/rooms/{roomId}/bots")
     @SecurityRequirement(name = "Bearer Authentication")
-    @Operation(summary = "Список ботов комнаты")
+    @Operation(summary = "Список ботов комнаты", deprecated = true)
     public List<RoomBotResponse> getRoomBots(
             @PathVariable UUID roomId,
             @AuthenticationPrincipal User currentUser
@@ -61,7 +61,7 @@ public class RoomBotController {
 
     @PutMapping("/api/rooms/{roomId}/bots/{botId}/config")
     @SecurityRequirement(name = "Bearer Authentication")
-    @Operation(summary = "Обновить конфиг конкретного бота комнаты")
+    @Operation(summary = "Обновить конфиг конкретного бота комнаты", deprecated = true)
     public RoomBotResponse updateRoomBotConfig(
             @PathVariable UUID roomId,
             @PathVariable UUID botId,
@@ -73,7 +73,7 @@ public class RoomBotController {
 
     @DeleteMapping("/api/rooms/{roomId}/bots/{botId}")
     @SecurityRequirement(name = "Bearer Authentication")
-    @Operation(summary = "Удалить бота из комнаты")
+    @Operation(summary = "Удалить бота из комнаты", deprecated = true)
     public void deleteRoomBot(
             @PathVariable UUID roomId,
             @PathVariable UUID botId,
@@ -84,7 +84,7 @@ public class RoomBotController {
 
     @PostMapping("/api/rooms/{roomId}/bots/pomodoro-manager/activate")
     @SecurityRequirement(name = "Bearer Authentication")
-    @Operation(summary = "Активировать помодоро-менеджер бота")
+    @Operation(summary = "Активировать помодоро-менеджер бота", deprecated = true)
     public RoomBotResponse activatePomodoroManager(
             @PathVariable UUID roomId,
             @AuthenticationPrincipal User currentUser,
@@ -95,7 +95,7 @@ public class RoomBotController {
 
     @PutMapping("/api/rooms/{roomId}/bots/pomodoro-manager/{botId}/config")
     @SecurityRequirement(name = "Bearer Authentication")
-    @Operation(summary = "Обновить конфиг помодоро-менеджер бота")
+    @Operation(summary = "Обновить конфиг помодоро-менеджер бота", deprecated = true)
     public RoomBotResponse updatePomodoroManagerConfig(
             @PathVariable UUID roomId,
             @AuthenticationPrincipal User currentUser,
@@ -107,7 +107,7 @@ public class RoomBotController {
 
     @DeleteMapping("/api/rooms/{roomId}/bots/pomodoro-manager/deactivate")
     @SecurityRequirement(name = "Bearer Authentication")
-    @Operation(summary = "Деактивировать помодоро-менеджер бота")
+    @Operation(summary = "Деактивировать помодоро-менеджер бота", deprecated = true)
     public RoomBotResponse deactivatePomodoroManager(
             @PathVariable UUID roomId,
             @AuthenticationPrincipal User currentUser

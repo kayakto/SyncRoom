@@ -11,7 +11,7 @@ import java.time.OffsetDateTime;
 import java.util.UUID;
 
 @Entity
-@Table(name = "room_participants", uniqueConstraints = @UniqueConstraint(columnNames = { "room_id", "user_id" }))
+@Table(name = "room_participants")
 @Data
 @Builder
 @NoArgsConstructor
@@ -27,8 +27,12 @@ public class RoomParticipant {
     private Room room;
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "user_id", nullable = false)
+    @JoinColumn(name = "user_id")
     private User user;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "seat_bot_id")
+    private RoomSeatBot seatBot;
 
     @Column(name = "joined_at", nullable = false, updatable = false)
     private OffsetDateTime joinedAt;

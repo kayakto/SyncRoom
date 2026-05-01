@@ -20,6 +20,7 @@ import ru.syncroom.rooms.domain.RoomParticipant;
 import ru.syncroom.rooms.domain.Seat;
 import ru.syncroom.rooms.repository.RoomParticipantRepository;
 import ru.syncroom.rooms.repository.RoomRepository;
+import ru.syncroom.rooms.repository.RoomSeatBotRepository;
 import ru.syncroom.rooms.repository.SeatRepository;
 import ru.syncroom.users.domain.AuthProvider;
 import ru.syncroom.users.domain.User;
@@ -63,6 +64,9 @@ class RoomControllerTest {
         private SeatRepository seatRepository;
 
         @Autowired
+        private RoomSeatBotRepository roomSeatBotRepository;
+
+        @Autowired
         private JwtTokenService jwtTokenService;
 
         @MockitoBean
@@ -78,6 +82,7 @@ class RoomControllerTest {
         @BeforeEach
         void setUp() {
                 participantRepository.deleteAll();
+                roomSeatBotRepository.deleteAll();
                 seatRepository.deleteAll();
                 roomRepository.deleteAll();
                 userRepository.deleteAll();

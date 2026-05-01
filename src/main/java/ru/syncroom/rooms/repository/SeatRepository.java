@@ -29,7 +29,11 @@ public interface SeatRepository extends JpaRepository<Seat, UUID> {
     @Query("UPDATE Seat s SET s.occupiedBy = NULL WHERE s.room.id = :roomId AND s.occupiedBy.id = :userId")
     int releaseByRoomIdAndUserId(@Param("roomId") UUID roomId, @Param("userId") UUID userId);
 
-    @Query("SELECT COUNT(s) FROM Seat s WHERE s.room.id = :roomId AND s.occupiedBy IS NOT NULL")
+    @Query("""
+            SELECT COUNT(s) FROM Seat s
+            WHERE s.room.id = :roomId
+              AND (s.occupiedBy IS NOT NULL OR EXISTS (
+                  SELECT 1 FROM RoomSeatBot b WHERE b.seat.id = s.id))""")
     int countOccupiedByRoomId(@Param("roomId") UUID roomId);
 }
 

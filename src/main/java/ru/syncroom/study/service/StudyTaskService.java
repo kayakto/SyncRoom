@@ -1,17 +1,20 @@
 package ru.syncroom.study.service;
 
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import ru.syncroom.common.exception.BadRequestException;
 import ru.syncroom.common.exception.NotFoundException;
 import ru.syncroom.rooms.domain.RoomParticipant;
+import ru.syncroom.rooms.domain.RoomSeatBot;
 import ru.syncroom.rooms.repository.RoomParticipantRepository;
 import ru.syncroom.rooms.repository.RoomRepository;
 import ru.syncroom.study.domain.StudyTask;
 import ru.syncroom.study.domain.TaskLike;
 import ru.syncroom.study.dto.*;
+import ru.syncroom.study.event.HumanTaskCompletedEvent;
 import ru.syncroom.study.repository.StudyTaskRepository;
 import ru.syncroom.study.repository.TaskLikeRepository;
 import ru.syncroom.study.ws.StudyTaskWsEvent;
@@ -34,6 +37,7 @@ public class StudyTaskService {
     private final RoomRepository roomRepository;
     private final UserRepository userRepository;
     private final RoomParticipantRepository participantRepository;
+    private final ApplicationEventPublisher eventPublisher;
     private final SimpMessagingTemplate messagingTemplate;
 
     private void publishTaskEvent(UUID roomId, StudyTaskWsEventType type, Object payload) {
@@ -88,16 +92,31 @@ public class StudyTaskService {
                 : likeRepository.findTaskIdsLikedByUserAmong(userId, taskIds);
 
         return tasks.stream().map(t -> {
-            User owner = t.getUser();
             long likes = likeCountByTask.getOrDefault(t.getId(), 0L);
+            User owner = t.getUser();
+            RoomSeatBot seatOwner = t.getOwnerSeatBot();
+            String ownerId;
+            String ownerName;
+            boolean isBotTask;
+            if (owner != null) {
+                ownerId = owner.getId().toString();
+                ownerName = owner.getName();
+                isBotTask = owner.getEmail() != null && owner.getEmail().equalsIgnoreCase("motivbot@syncroom.local");
+            } else if (seatOwner != null) {
+                ownerId = seatOwner.getId().toString();
+                ownerName = seatOwner.getName();
+                isBotTask = true;
+            } else {
+                throw new IllegalStateException("Task has no owner");
+            }
             return TaskWithLikesResponse.builder()
                     .id(t.getId().toString())
                     .text(t.getText())
                     .isDone(Boolean.TRUE.equals(t.getIsDone()))
                     .sortOrder(t.getSortOrder())
-                    .ownerId(owner.getId().toString())
-                    .ownerName(owner.getName())
-                    .isBot(owner.getEmail() != null && owner.getEmail().equalsIgnoreCase("motivbot@syncroom.local"))
+                    .ownerId(ownerId)
+                    .ownerName(ownerName)
+                    .isBot(isBotTask)
                     .likeCount(likes)
                     .likedByMe(likedByMe.contains(t.getId()))
                     .build();
@@ -115,18 +134,33 @@ public class StudyTaskService {
         List<RoomParticipant> participants = participantRepository.findByRoomId(roomId);
         List<LeaderboardEntryResponse> rows = new ArrayList<>();
         for (RoomParticipant p : participants) {
-            User u = p.getUser();
-            long totalLikes = likeRepository.countLikesOnTasksOwnedByUserInRoom(u.getId(), roomId);
-            long totalTasks = taskRepository.countByUser_IdAndRoom_Id(u.getId(), roomId);
-            long completedTasks = taskRepository.countByUser_IdAndRoom_IdAndIsDoneTrue(u.getId(), roomId);
-            rows.add(LeaderboardEntryResponse.builder()
-                    .userId(u.getId().toString())
-                    .userName(u.getName())
-                    .avatarUrl(u.getAvatarUrl())
-                    .totalLikes(totalLikes)
-                    .completedTasks(completedTasks)
-                    .totalTasks(totalTasks)
-                    .build());
+            if (p.getUser() != null) {
+                User u = p.getUser();
+                long totalLikes = likeRepository.countLikesOnTasksOwnedByUserInRoom(u.getId(), roomId);
+                long totalTasks = taskRepository.countByUser_IdAndRoom_Id(u.getId(), roomId);
+                long completedTasks = taskRepository.countByUser_IdAndRoom_IdAndIsDoneTrue(u.getId(), roomId);
+                rows.add(LeaderboardEntryResponse.builder()
+                        .userId(u.getId().toString())
+                        .userName(u.getName())
+                        .avatarUrl(u.getAvatarUrl())
+                        .totalLikes(totalLikes)
+                        .completedTasks(completedTasks)
+                        .totalTasks(totalTasks)
+                        .build());
+            } else if (p.getSeatBot() != null) {
+                RoomSeatBot b = p.getSeatBot();
+                long totalLikes = likeRepository.countLikesOnTasksOwnedBySeatBotInRoom(b.getId(), roomId);
+                long totalTasks = taskRepository.countByOwnerSeatBot_IdAndRoom_Id(b.getId(), roomId);
+                long completedTasks = taskRepository.countByOwnerSeatBot_IdAndRoom_IdAndIsDoneTrue(b.getId(), roomId);
+                rows.add(LeaderboardEntryResponse.builder()
+                        .userId(b.getId().toString())
+                        .userName(b.getName())
+                        .avatarUrl(b.getAvatarUrl())
+                        .totalLikes(totalLikes)
+                        .completedTasks(completedTasks)
+                        .totalTasks(totalTasks)
+                        .build());
+            }
         }
         rows.sort(Comparator.comparingLong(LeaderboardEntryResponse::getTotalLikes).reversed()
                 .thenComparing(LeaderboardEntryResponse::getUserName, Comparator.nullsLast(String::compareToIgnoreCase)));
@@ -260,6 +294,8 @@ public class StudyTaskService {
         StudyTask task = taskRepository.findByIdAndUserIdAndRoomId(taskId, userId, roomId)
                 .orElseThrow(() -> new NotFoundException("Task not found"));
 
+        boolean wasDone = Boolean.TRUE.equals(task.getIsDone());
+
         if (request.getText() != null) {
             task.setText(request.getText());
         }
@@ -279,6 +315,10 @@ public class StudyTaskService {
         payload.put("ownerId", updated.getUser().getId().toString());
         payload.put("ownerName", updated.getUser().getName());
         publishTaskEvent(roomId, StudyTaskWsEventType.TASK_UPDATED, payload);
+
+        if (Boolean.TRUE.equals(updated.getIsDone()) && !wasDone && updated.getUser() != null) {
+            eventPublisher.publishEvent(new HumanTaskCompletedEvent(updated));
+        }
         return toResponse(updated);
     }
 

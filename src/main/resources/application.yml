@@ -88,3 +88,6 @@ app:
     report-threshold: ${APP_PROJECTOR_REPORT_THRESHOLD:2}
   push:
     vapid-public-key: ${APP_PUSH_VAPID_PUBLIC_KEY:dev-vapid-public-key-placeholder}
+  seat-bots:
+    max-per-room: ${APP_SEAT_BOTS_MAX_PER_ROOM:3}
+    study-helper-work-like-probability: ${APP_SEAT_BOTS_STUDY_LIKE_PROB:0.3}

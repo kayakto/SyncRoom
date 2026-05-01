@@ -18,5 +18,7 @@ public class SeatTakenPayload {
         private String id;
         private String name;
         private String avatarUrl;
+        /** true для seat-бота */
+        private Boolean isBot;
     }
 }

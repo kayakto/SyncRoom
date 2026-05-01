@@ -20,6 +20,7 @@ import ru.syncroom.rooms.domain.Room;
 import ru.syncroom.rooms.domain.RoomParticipant;
 import ru.syncroom.rooms.repository.RoomParticipantRepository;
 import ru.syncroom.rooms.repository.RoomRepository;
+import ru.syncroom.rooms.repository.RoomSeatBotRepository;
 import ru.syncroom.study.domain.StudyTask;
 import ru.syncroom.study.repository.StudyTaskRepository;
 import ru.syncroom.study.repository.TaskLikeRepository;
@@ -68,6 +69,9 @@ class StudyTaskControllerTest {
     private RoomParticipantRepository participantRepository;
 
     @Autowired
+    private RoomSeatBotRepository roomSeatBotRepository;
+
+    @Autowired
     private StudyTaskRepository taskRepository;
 
     @Autowired
@@ -93,6 +97,7 @@ class StudyTaskControllerTest {
         taskLikeRepository.deleteAll();
         taskRepository.deleteAll();
         participantRepository.deleteAll();
+        roomSeatBotRepository.deleteAll();
         roomRepository.deleteAll();
         userRepository.deleteAll();
 

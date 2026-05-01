@@ -6,6 +6,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import ru.syncroom.rooms.domain.Room;
+import ru.syncroom.rooms.domain.RoomSeatBot;
 import ru.syncroom.users.domain.User;
 
 import java.time.OffsetDateTime;
@@ -24,8 +25,12 @@ public class StudyTask {
     private UUID id;
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "user_id", nullable = false)
+    @JoinColumn(name = "user_id")
     private User user;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "owner_seat_bot_id")
+    private RoomSeatBot ownerSeatBot;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "room_id", nullable = false)

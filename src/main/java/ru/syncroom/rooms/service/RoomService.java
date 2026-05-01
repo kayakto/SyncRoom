@@ -39,6 +39,7 @@ public class RoomService {
     private final SeatService seatService;
     private final GameService gameService;
     private final StudyTaskRepository studyTaskRepository;
+    private final SeatBotService seatBotService;
     private final SimpMessagingTemplate messagingTemplate;
 
     // ─── Helpers ────────────────────────────────────────────────────────────
@@ -61,7 +62,7 @@ public class RoomService {
         List<Room> rooms = roomRepository.findAll();
 
         return rooms.stream().map(room -> {
-            int count = participantRepository.countByRoomId(room.getId());
+            int count = participantRepository.countHumanParticipantsByRoomId(room.getId());
             boolean active = count < room.getMaxParticipants();
 
             if (room.getIsActive() != active) {
@@ -69,10 +70,11 @@ public class RoomService {
                 roomRepository.save(room);
             }
 
+            int totalMembers = participantRepository.countByRoomId(room.getId());
             int seated = seatRepository.countOccupiedByRoomId(room.getId());
             List<SeatDto> seats = seatRepository.findByRoomId(room.getId())
                     .stream().map(SeatDto::from).toList();
-            return RoomResponse.from(room, seated, count - seated, seats);
+            return RoomResponse.from(room, seated, totalMembers - seated, seats);
         }).toList();
     }
 
@@ -96,7 +98,7 @@ public class RoomService {
                     ". Leave the current room before joining another.");
         }
 
-        int currentCount = participantRepository.countByRoomId(roomId);
+        int currentCount = participantRepository.countHumanParticipantsByRoomId(roomId);
         UUID actualRoomId;
 
         if (currentCount >= room.getMaxParticipants()) {
@@ -183,7 +185,12 @@ public class RoomService {
 
         participantRepository.deleteByRoomIdAndUserId(roomId, userId);
 
-        int countAfter = participantRepository.countByRoomId(roomId);
+        int humanAfter = participantRepository.countHumanParticipantsByRoomId(roomId);
+        if (humanAfter == 0) {
+            seatBotService.removeAllBotsInRoom(roomId);
+        }
+
+        int countAfter = humanAfter;
         boolean shouldBeActive = countAfter < room.getMaxParticipants();
         if (room.getIsActive() != shouldBeActive) {
             room.setIsActive(shouldBeActive);
@@ -194,6 +201,7 @@ public class RoomService {
                 .userId(user.getId().toString())
                 .name(user.getName())
                 .avatarUrl(user.getAvatarUrl())
+                .isBot(false)
                 .build();
         publish(roomId, RoomEventType.PARTICIPANT_LEFT, leavingUser);
     }
@@ -221,11 +229,11 @@ public class RoomService {
 
         return participations.stream().map(p -> {
             Room room = p.getRoom();
-            int count = participantRepository.countByRoomId(room.getId());
+            int totalMembers = participantRepository.countByRoomId(room.getId());
             int seated = seatRepository.countOccupiedByRoomId(room.getId());
             List<SeatDto> seats = seatRepository.findByRoomId(room.getId())
                     .stream().map(SeatDto::from).toList();
-            return RoomResponse.from(room, seated, count - seated, seats);
+            return RoomResponse.from(room, seated, totalMembers - seated, seats);
         }).toList();
     }
 }

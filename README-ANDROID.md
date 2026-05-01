@@ -38,6 +38,18 @@
   - Топик `/topic/room/{roomId}/seats` с событиями `SEAT_TAKEN` / `SEAT_LEFT` (в payload — актуальные `participantCount` / `observerCount`).
   - В `RoomResponse`: **`participantCount`** = за столом (занятые места), **`observerCount`** = в комнате без места; в `ParticipantResponse` поле **`role`**: `OBSERVER` | `PARTICIPANT`.
 
+- **Seat-боты** (персонажи **за столом**, не путать с игровыми ботами Gartic/Quiplash и не с мотивационным ботом `/bots/motivational-goals`):
+  - Доступны только в комнатах с `context`: **`work`**, **`study`**, **`sport`**. В **`leisure`** посадка возвращает `400`.
+  - `GET /api/rooms/seat-bots/catalog?context=WORK` (или `STUDY`, `SPORT`) — список типов с полями `botType`, `name`, `avatarUrl`, `description`, `supportedContexts`, `behaviour` (`reactsToPomodoro`, `createsGoals`, `likesGoals`).
+  - `POST /api/rooms/{roomId}/seats/{seatId}/bot` — тело `{ "botType": "WORK_FOCUS_BUDDY" }` (другие ключи: `STUDY_HELPER`, `SPORT_CHEERLEADER`). Ответ — **`SeatDto`**: у занятого ботом места `occupiedBy.id` — id seat-бота, **`occupiedBy.isBot`: true**, `name` / `avatarUrl` как в каталоге.
+  - `DELETE /api/rooms/{roomId}/seats/{seatId}/bot` или `POST .../bot/leave` — снять бота; в ответе `occupiedBy: null`.
+  - `GET /api/rooms/{roomId}/seat-bots` — список ботов в комнате (`id`, `botType`, `name`, `avatarUrl`, `seatId`).
+  - **`409`** на `.../sit`, если на месте уже seat-бот. **`400`**, если тип бота уже есть в комнате или превышен лимит (конфиг `APP_SEAT_BOTS_MAX_PER_ROOM`, по умолчанию 3).
+  - WebSocket: при посадке/снятии — те же **`SEAT_TAKEN`** / **`SEAT_LEFT`**, что и для людей; в **`SEAT_TAKEN`** у объекта пользователя есть **`isBot: true`**. На `/topic/room/{roomId}` дополнительно **`PARTICIPANT_JOINED`** / **`PARTICIPANT_LEFT`** с **`isBot: true`** (у бота `userId` в payload — строковый id seat-бота).
+  - Когда из комнаты выходит **последний живой** пользователь (`POST .../leave`), сервер **удаляет всех seat-ботов** (места освобождаются, события уходят на `/seats` и `/room`).
+  - Лидерборд и таски (`/tasks/all`, лайки) поддерживают цели seat-бота (`isBot` у задачи, см. основной README).
+  - Аватар по умолчанию — URL на статике backend (часто `/icons/icon-192.png`); на проде можно заменить на CDN без смены контрактов.
+
 Ниже подробно описаны **проектор**, **помодоро** и **учебные таски**.
 
 ### 1.1. Важно про web auth (чтобы не сломать Android)

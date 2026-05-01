@@ -44,4 +44,8 @@ public class Seat {
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "occupied_by")
     private User occupiedBy;
+
+    /** Seat bot occupying this seat (mutually exclusive with {@link #occupiedBy} in business logic). */
+    @OneToOne(mappedBy = "seat", fetch = FetchType.LAZY)
+    private RoomSeatBot seatBot;
 }

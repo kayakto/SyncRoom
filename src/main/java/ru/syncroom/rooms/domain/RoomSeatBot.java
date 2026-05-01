@@ -1,39 +1,42 @@
-package ru.syncroom.study.domain;
+package ru.syncroom.rooms.domain;
 
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-import ru.syncroom.rooms.domain.RoomSeatBot;
-import ru.syncroom.users.domain.User;
 
 import java.time.OffsetDateTime;
 import java.util.UUID;
 
 @Entity
-@Table(name = "task_like")
+@Table(name = "room_seat_bots")
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class TaskLike {
+public class RoomSeatBot {
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
 
-    @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumn(name = "task_id", nullable = false)
-    private StudyTask task;
-
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "user_id")
-    private User user;
+    @JoinColumn(name = "room_id", nullable = false)
+    private Room room;
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "liker_seat_bot_id")
-    private RoomSeatBot likerSeatBot;
+    @Column(name = "bot_type", nullable = false, length = 50)
+    private String botType;
+
+    @OneToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "seat_id", nullable = false, unique = true)
+    private Seat seat;
+
+    @Column(nullable = false)
+    private String name;
+
+    @Column(name = "avatar_url", columnDefinition = "TEXT")
+    private String avatarUrl;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private OffsetDateTime createdAt;

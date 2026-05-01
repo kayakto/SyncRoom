@@ -68,6 +68,8 @@ APP_PUSH_VAPID_PUBLIC_KEY=your-vapid-public-key
 REDIS_HOST=localhost               # опционально
 REDIS_PORT=6379                    # опционально
 APP_PORT=8080
+APP_SEAT_BOTS_MAX_PER_ROOM=3       # макс. seat-ботов в одной комнате
+APP_SEAT_BOTS_STUDY_LIKE_PROB=0.3  # вероятность лайка целей ботом STUDY_HELPER (0–1)
 BOTS_INFERENCE_ENABLED=true
 BOTS_INFERENCE_DRAW_URL=http://localhost:8091/api/draw
 BOTS_INFERENCE_GUESS_URL=http://localhost:8091/api/guess
@@ -251,7 +253,27 @@ OLLAMA_VISION_MODEL=llava:7b
 
 **Правила:** пользователь может занимать только 1 место в комнате. При выборе нового места — автоматическая пересадка. При выходе из комнаты — место освобождается автоматически.
 
-**Коды ответов:** `200` успех, `403` чужое место, `404` не найдено, `409` место занято другим.
+**Коды ответов:** `200` успех, `403` чужое место, `404` не найдено, `409` место занято другим или **seat-ботом** (текст про bot/occupied).
+
+### Seat-bots — персонажи за столом (`work` / `study` / `sport`)
+
+Отдельно от **игровых** ботов лобби (`/api/games/.../bots`) и от **мотивационного** бота комнаты (`/api/rooms/.../bots/motivational-goals`). Seat-бот сидит на **конкретном seat**, попадает в `seats[].occupiedBy` с **`isBot: true`**, даёт **`PARTICIPANT_JOINED`** / **`PARTICIPANT_LEFT`** на `/topic/room/{roomId}` с **`isBot: true`**. В **`leisure`** посадка недоступна (`400`).
+
+| Метод | URL | Описание |
+|-------|-----|----------|
+| GET | `/api/rooms/seat-bots/catalog?context=WORK` | Каталог типов для контекста (`WORK`, `STUDY`, …) |
+| POST | `/api/rooms/{roomId}/seats/{seatId}/bot` | Посадить бота; body: `{ "botType": "WORK_FOCUS_BUDDY" }` → `SeatDto` |
+| DELETE | `/api/rooms/{roomId}/seats/{seatId}/bot` | Снять seat-бота с места → `SeatDto` (`occupiedBy: null`) |
+| POST | `/api/rooms/{roomId}/seats/{seatId}/bot/leave` | То же, что DELETE (алиас) |
+| GET | `/api/rooms/{roomId}/seat-bots` | Список seat-ботов в комнате (`id`, `botType`, `name`, `avatarUrl`, `seatId`) |
+
+**Типы (`botType`):** `WORK_FOCUS_BUDDY` (work+study), `STUDY_HELPER` (study), `SPORT_CHEERLEADER` (sport) — см. ответ каталога (`name`, `description`, `behaviour.*`).
+
+**Ограничения:** не участник → `403`; место занято человеком/ботом → `409` при `sit` / конфликт при второй посадке; дубликат типа в комнате или превышен лимит → `400` (лимит: `syncroom.seat-bots.max-per-room` / `APP_SEAT_BOTS_MAX_PER_ROOM`). Снять бота с места, где сидит человек, нельзя → `400`.
+
+**Аватары:** по умолчанию статический URL на backend (например `/icons/icon-192.png`); позже можно сменить на CDN, меняется только значение `avatarUrl` в данных.
+
+**Выход из комнаты:** когда в комнате не остаётся **ни одного живого** участника (`user_id` в участниках), сервер удаляет всех seat-ботов комнаты (места освобождаются, уходят `SEAT_LEFT` / `PARTICIPANT_LEFT`).
 
 ### Projector — совместный просмотр (только leisure) + очередь
 
@@ -595,10 +617,10 @@ destination:/app/room/{roomId}/projector/control
 
 | Тип | Топик | Триггер | Payload |
 |-----|-------|---------|---------|
-| `PARTICIPANT_JOINED` | `.../room/{id}` | `POST /join` | `{ userId, name, avatarUrl, joinedAt, role }` (`OBSERVER` \| `PARTICIPANT`) |
-| `PARTICIPANT_LEFT` | `.../room/{id}` | `POST /leave` или закрытие **последнего** STOMP (с JWT) | `{ userId, name, avatarUrl }` (без `role`) |
-| `SEAT_TAKEN` | `.../room/{id}/seats` | `POST /sit` | `{ seatId, user: { id, name, avatarUrl }, participantCount, observerCount }` |
-| `SEAT_LEFT` | `.../room/{id}/seats` | `POST /leave seat`, выход из комнаты или закрытие **последнего** STOMP (с JWT) | `{ seatId, userId, participantCount, observerCount }` |
+| `PARTICIPANT_JOINED` | `.../room/{id}` | `POST /join` или посадка seat-бота | `{ userId, name, avatarUrl, joinedAt, role, isBot? }` (`OBSERVER` \| `PARTICIPANT`; у seat-бота `isBot: true`) |
+| `PARTICIPANT_LEFT` | `.../room/{id}` | `POST /leave`, снятие seat-бота, очистка ботов при последнем человеке или закрытие **последнего** STOMP (с JWT) | `{ userId, name, avatarUrl, isBot? }` (без `role`) |
+| `SEAT_TAKEN` | `.../room/{id}/seats` | `POST /sit` или `POST .../seats/{id}/bot` | `{ seatId, user: { id, name, avatarUrl, isBot? }, participantCount, observerCount }` |
+| `SEAT_LEFT` | `.../room/{id}/seats` | `POST /leave` (место), `DELETE .../bot`, выход из комнаты, очистка ботов | `{ seatId, userId, participantCount, observerCount }` |
 | `PROJECTOR_STARTED` | `.../room/{id}/projector` | `POST /projector` | `{ host, mode, videoUrl, videoTitle, streamKey? }` |
 | `PROJECTOR_STOPPED` | `.../room/{id}/projector` | `DELETE /projector`, выход хоста или смена слота очереди | `{ hostId, reason? }` |
 | `PROJECTOR_CONTROL` | `.../room/{id}/projector` | WS SEND `/projector/control` | `{ action, positionMs }` |
