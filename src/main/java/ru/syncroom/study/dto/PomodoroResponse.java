@@ -10,6 +10,9 @@ public class PomodoroResponse {
     private String id;
     private String roomId;
     private UserDto startedBy;
+    /** Общий таймер комнаты: управляется только сервером (бот, таймер); клиенты не стартуют и не скипают фазы. */
+    @Builder.Default
+    private boolean serverControlled = true;
     private String phase;           // WORK, BREAK, LONG_BREAK, PAUSED, FINISHED
     private int currentRound;
     private int roundsTotal;

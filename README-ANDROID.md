@@ -551,38 +551,21 @@ fun sendProjectorControl(roomId: String, action: String, positionMs: Long) {
 
 ---
 
-## 6. Помодоро-таймер только для комнат study
+## 6. Помодоро — общий таймер (только комнаты study)
 
 ### 6.1. REST API
 
 ```text
 GET    /api/rooms/{roomId}/pomodoro
-POST   /api/rooms/{roomId}/pomodoro/start
-POST   /api/rooms/{roomId}/pomodoro/pause
-POST   /api/rooms/{roomId}/pomodoro/resume
-POST   /api/rooms/{roomId}/pomodoro/skip
-DELETE /api/rooms/{roomId}/pomodoro
 ```
 
-- Доступно только для `context = "study"`. В `work` / `sport` / `leisure` бекенд отвечает `400` («Pomodoro is not available…») на все перечисленные методы.
-- Любой участник комнаты может запускать/останавливать таймер.
-- **Автосмена фазы на сервере:** раз в ~1 с бекенд ищет активные сессии (`WORK` / `BREAK` / `LONG_BREAK`), у которых `phaseEndAt` уже наступил, и переводит на следующую фазу — в WebSocket уходит тот же `POMODORO_PHASE_CHANGED`, что и при ручном `skip`, либо `POMODORO_STOPPED` при завершении цикла. Клиенту **не обязательно** вызывать `skip` по локальному таймеру: достаточно подписаться на топик и обновлять UI по событиям; `skip` остаётся для ручного «пропустить фазу». После рестарта сервера таймер в памяти сбрасывается, но фаза догонится за счёт этого механизма (пока сессия есть в БД).
+- Доступно **только** для `context = "study"`. Для `work` / `sport` / `leisure` — `400` («Pomodoro is not available…»).
+- **GET** — только если пользователь **участник** комнаты. Других методов помодоро в REST **нет**: старт, стоп, пауза и скип фазы только на сервере (бот).
+- Старт и длительности фаз — **Pomodoro Manager** (`autoStart`, `workDuration`, `breakDuration`, `longBreakDuration`, `roundsTotal` в конфиге бота). Публичных `POST/DELETE .../pomodoro*` **нет**.
 
-**Старт помодоро:**
+**Параметры по умолчанию** (секунды), если в конфиге бота не задано иное: **4** раунда, работа **1500** (25 мин), короткий перерыв **300** (5 мин), длинный перерыв **900** (15 мин). В `PomodoroResponse` приходят фактические значения текущей сессии.
 
-```http
-POST /api/rooms/{roomId}/pomodoro/start
-Content-Type: application/json
-
-{
-  "workDuration": 1500,
-  "breakDuration": 300,
-  "longBreakDuration": 900,
-  "roundsTotal": 4
-}
-```
-
-Если тело пустое — используются значения по умолчанию (25/5/15/4).
+**Автосмена фазы:** сервер переводит фазы по `phaseEndAt`; клиенту достаточно подписки на топик. После рестарта бекенда фаза догоняется планировщиком по БД.
 
 **Ответ `PomodoroResponse`:**
 
@@ -591,6 +574,7 @@ Content-Type: application/json
   "id": "uuid",
   "roomId": "uuid",
   "startedBy": { "id": "user-uuid", "name": "Аня", "avatarUrl": "https://..." },
+  "serverControlled": true,
   "phase": "WORK",
   "currentRound": 1,
   "roundsTotal": 4,
@@ -613,22 +597,11 @@ id:sub-pomodoro
 
 События (формат как у остальных WS-событий):
 
-- `POMODORO_STARTED` — отправляется после `start`;
-- `POMODORO_PHASE_CHANGED` — переход фазы (WORK/BREAK/LONG_BREAK): после **истечения** `phaseEndAt` на сервере, по **ручному** `skip` или по внутреннему таймеру процесса;
-- `POMODORO_PAUSED` — `{ "phase": "PAUSED", "remainingSeconds": N }`;
-- `POMODORO_RESUMED` — `{ "phase": "...", "phaseEndAt": "..." }`;
-- `POMODORO_STOPPED` — таймер остановлен или цикл завершён.
+- `POMODORO_STARTED` — сессия запущена на сервере;
+- `POMODORO_PHASE_CHANGED` — переход фазы после истечения `phaseEndAt` (или внутренней логики);
+- `POMODORO_STOPPED` — цикл дошёл до `FINISHED` или сессия сброшена на сервере (не через публичный REST).
 
-```json
-{
-  "type": "POMODORO_PAUSED",
-  "payload": {
-    "phase": "PAUSED",
-    "remainingSeconds": 847
-  },
-  "timestamp": "2026-03-18T12:10:53Z"
-}
-```
+События паузы/резюма в текущей модели не отправляются.
 
 ### 6.3. Kotlin-модели для помодоро
 
@@ -638,21 +611,14 @@ data class PomodoroResponse(
     val id: String,
     val roomId: String,
     val startedBy: ProjectorUserDto,
-    val phase: String,           // WORK, BREAK, LONG_BREAK, PAUSED, FINISHED
+    val serverControlled: Boolean = true,
+    val phase: String,           // WORK, BREAK, LONG_BREAK, FINISHED
     val currentRound: Int,
     val roundsTotal: Int,
-    val phaseEndAt: String?,     // ISO 8601, null если PAUSED/FINISHED
+    val phaseEndAt: String?,     // ISO 8601, null если FINISHED
     val workDuration: Int,
     val breakDuration: Int,
     val longBreakDuration: Int
-)
-
-@Serializable
-data class PomodoroStartRequest(
-    val workDuration: Int? = null,
-    val breakDuration: Int? = null,
-    val longBreakDuration: Int? = null,
-    val roundsTotal: Int? = null
 )
 
 @Serializable
@@ -674,37 +640,6 @@ interface SyncRoomApi {
         @Path("roomId") roomId: String,
         @Header("Authorization") token: String
     ): PomodoroResponse
-
-    @POST("/api/rooms/{roomId}/pomodoro/start")
-    suspend fun startPomodoro(
-        @Path("roomId") roomId: String,
-        @Header("Authorization") token: String,
-        @Body body: PomodoroStartRequest
-    ): PomodoroResponse
-
-    @POST("/api/rooms/{roomId}/pomodoro/pause")
-    suspend fun pausePomodoro(
-        @Path("roomId") roomId: String,
-        @Header("Authorization") token: String
-    ): PomodoroResponse
-
-    @POST("/api/rooms/{roomId}/pomodoro/resume")
-    suspend fun resumePomodoro(
-        @Path("roomId") roomId: String,
-        @Header("Authorization") token: String
-    ): PomodoroResponse
-
-    @POST("/api/rooms/{roomId}/pomodoro/skip")
-    suspend fun skipPomodoro(
-        @Path("roomId") roomId: String,
-        @Header("Authorization") token: String
-    ): PomodoroResponse
-
-    @DELETE("/api/rooms/{roomId}/pomodoro")
-    suspend fun stopPomodoro(
-        @Path("roomId") roomId: String,
-        @Header("Authorization") token: String
-    )
 }
 ```
 
@@ -1031,10 +966,10 @@ interface SyncRoomApi {
 ## 8. Практика для Android-разработчика (помодоро + таски)
 
 - **Помодоро:**
-  - при заходе в комнату с `context` **study** или **work** можно показать кнопку «Запустить таймер» → `startPomodoro`;
-  - подписаться на `/topic/room/{roomId}/pomodoro` и обновлять UI по событиям `POMODORO_STARTED`, `POMODORO_PHASE_CHANGED`, `POMODORO_PAUSED`, `POMODORO_RESUMED`, `POMODORO_STOPPED`;
-  - локальный отсчёт можно вести от `phaseEndAt`, но **обязательно** подстраиваться под `POMODORO_PHASE_CHANGED` с сервера (автосмена фазы ~раз в секунду на бекенде);
-  - кнопка «Пропустить фазу» → `skipPomodoro` (необязательна для корректной смены фаз).
+  - в **учебной** комнате (`study`) таймер **стартуют на сервере** (бот менеджер после активации мотивационного бота или ручной `POST .../bots/pomodoro-manager/activate`); в UI достаточно `GET` при входе и подписки на WS;
+  - подписаться на `/topic/room/{roomId}/pomodoro` и обновлять UI по `POMODORO_STARTED`, `POMODORO_PHASE_CHANGED`, `POMODORO_STOPPED`;
+  - локальный отсчёт от `phaseEndAt` — только для отображения; истина — события с сервера;
+  - кнопок старт/стоп/пауза/скип помодоро в UI **не нужно** — только отображение по `GET` и WS.
 - **Учебные таски:**
   - личный список: `GET /tasks`; общая картина с лайками: `GET /tasks/all`; лидерборд: `GET /leaderboard`;
   - подписка на `/topic/room/{roomId}/tasks` для `TASK_CREATED` / `TASK_UPDATED` / `TASK_DELETED` / `TASK_LIKED` / `TASK_UNLIKED` / `BOT_GOAL_SUGGESTED`;

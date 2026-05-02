@@ -378,35 +378,31 @@ OLLAMA_VISION_MODEL=llava:7b
 }
 ```
 
-### Pomodoro — общий таймер только для study-комнат
+### Pomodoro — общий таймер (только study-комната)
 
-Доступно только при `context="study"`. Для `work` / `sport` / `leisure` все эндпоинты помодоро возвращают `400`.
+Один таймер на комнату: **крутится на сервере**. Клиент по REST может **только** `GET` состояние (участник `study`); подписка на WebSocket для событий. Старт, смена фаз, пауза и «следующая фаза» с клиента **недоступны**; публичного стопа по HTTP **нет** (при необходимости сброса в тестах/интеграциях используется внутренний сервис).
+
+Доступно **только** при `context="study"`. Для `work` / `sport` / `leisure` эндпоинты помодоро возвращают `400`.
 
 | Метод | URL | Описание |
 |-------|-----|----------|
-| GET | `/api/rooms/{roomId}/pomodoro` | Текущее состояние помодоро-таймера |
-| POST | `/api/rooms/{roomId}/pomodoro/start` | Запустить помодоро (`study` или `work`) |
-| POST | `/api/rooms/{roomId}/pomodoro/pause` | Поставить таймер на паузу |
-| POST | `/api/rooms/{roomId}/pomodoro/resume` | Продолжить после паузы |
-| POST | `/api/rooms/{roomId}/pomodoro/skip` | Пропустить текущую фазу (WORK/BREAK/LONG_BREAK) |
-| DELETE | `/api/rooms/{roomId}/pomodoro` | Остановить и удалить таймер |
+| GET | `/api/rooms/{roomId}/pomodoro` | Текущее состояние (только **участник** комнаты) |
 
-**Старт помодоро:**
+**Параметры цикла (все длительности — секунды):** задаются конфигом бота `POMODORO_MANAGER` (`PUT .../bots/pomodoro-manager/{botId}/config` или значения по умолчанию при первом создании бота):
 
-```json
-POST /api/rooms/{roomId}/pomodoro/start
-{
-  "workDuration": 1500,
-  "breakDuration": 300,
-  "longBreakDuration": 900,
-  "roundsTotal": 4
-}
-```
+| Параметр | По умолчанию | Смысл |
+|----------|---------------|--------|
+| `roundsTotal` | **4** | Число раундов работы (WORK) за цикл |
+| `workDuration` | **1500** (25 мин) | Длительность одного раунда работы |
+| `breakDuration` | **300** (5 мин) | Короткий перерыв между раундами (после WORK, если раунд не последний) |
+| `longBreakDuration` | **900** (15 мин) | Длинный перерыв после последнего раунда WORK перед завершением цикла |
 
-- если тело пустое — используются значения по умолчанию (25/5/15/4);
-- только участники комнаты с `context="study"` могут пользоваться помодоро (все методы, включая `GET` / `DELETE`);
-- в комнате может быть только один активный таймер (UNIQUE room_id).
-- **Автосмена фаз на сервере:** раз в 1 с фоновая задача ищет сессии с `phase` WORK/BREAK/LONG_BREAK и `phaseEndAt <= now()`, переводит на следующую фазу и шлёт `POMODORO_PHASE_CHANGED` (или `POMODORO_STOPPED` при завершении). Дублирует и подстраховывает in-memory таймер (`PomodoroTimerService`), в том числе после рестарта JVM. В профиле `test` планировщик отключён (`@Profile("!test")`).
+В ответе `GET` поля `workDuration`, `breakDuration`, `longBreakDuration`, `roundsTotal` отражают **фактические** значения текущей сессии (как при старте).
+
+**Старт сессии:** сервером, при активном **Pomodoro Manager** (`POMODORO_MANAGER`): при активации мотивационного бота создаётся менеджер по умолчанию; при `autoStart=true` (по умолчанию) через `autoStartDelay` секунд вызывается внутренний старт. Отдельного публичного `POST .../pomodoro/start` **нет** (устаревшие пути ответят `404`).
+
+- в комнате не более одной активной сессии (`UNIQUE room_id`); после фазы `FINISHED` запись может быть удалена при следующем автозапуске;
+- **Автосмена фаз:** `PomodoroTimerService` планирует переход по `phaseEndAt`; планировщик `PomodoroPhaseScheduler` ищет `phaseEndAt <= now()` и догоняет фазу после рестарта JVM. В профиле `test` планировщик отключён (`@Profile("!test")`).
 
 **Ответ `PomodoroResponse`:**
 
@@ -415,6 +411,7 @@ POST /api/rooms/{roomId}/pomodoro/start
   "id": "uuid",
   "roomId": "uuid",
   "startedBy": { "id": "user-uuid", "name": "Аня", "avatarUrl": "https://..." },
+  "serverControlled": true,
   "phase": "WORK",
   "currentRound": 1,
   "roundsTotal": 4,
@@ -565,7 +562,7 @@ Authorization:Bearer <accessToken>
 | `/topic/room/{roomId}` | `PARTICIPANT_JOINED`, `PARTICIPANT_LEFT` |
 | `/topic/room/{roomId}/seats` | `SEAT_TAKEN`, `SEAT_LEFT` ✨ |
 | `/topic/room/{roomId}/projector` | `PROJECTOR_STARTED`, `PROJECTOR_STOPPED`, `PROJECTOR_CONTROL`, `STREAM_LIVE`, `STREAM_OFFLINE`, `PROJECTOR_QUEUE_UPDATED`, `REMOVED_BY_REPORTS` ✨ |
-| `/topic/room/{roomId}/pomodoro` | `POMODORO_STARTED`, `POMODORO_PHASE_CHANGED`, `POMODORO_PAUSED`, `POMODORO_RESUMED`, `POMODORO_STOPPED` ✨ |
+| `/topic/room/{roomId}/pomodoro` | `POMODORO_STARTED`, `POMODORO_PHASE_CHANGED`, `POMODORO_STOPPED` (типы паузы в текущей модели не используются) ✨ |
 | `/topic/room/{roomId}/tasks` | `TASK_CREATED`, `TASK_UPDATED`, `TASK_DELETED`, `TASK_LIKED`, `TASK_UNLIKED`, `BOT_GOAL_SUGGESTED` |
 | `/topic/room/{roomId}/chat` | Сообщения чата: JSON `{ id, userId, userName, text, createdAt }` |
 | `/topic/game/{gameId}` | Quiplash: `GAME_STARTED`, `PROMPT_RECEIVED`, `WAITING_FOR_OTHERS`, `WAITING_FOR_VOTES`, `ROUND_RESULT`, `GAME_FINISHED`; Gartic: `STEP_WRITE`, `STEP_DRAW`, `STEP_GUESS`, `REVEAL_CHAIN`, `GAME_FINISHED` ✨ |
@@ -745,7 +742,7 @@ gradle test
 | `WebSocketRoomDisconnectListenerTest` | STOMP disconnect → leave комнаты, мультисессии | 3 |
 | `SeatControllerTest` | sit, stand-up, auto-move, 403, 409, 404 | 9 |
 | `ProjectorControllerTest` | REST + SRS callback для проектора | 8 |
-| `PomodoroControllerTest` | REST для помодоро (только study; work/sport/leisure -> 400) | 9 |
+| `PomodoroControllerTest` | REST для помодоро (только GET; study-only; дефолты; 405 на POST/PUT/DELETE) | 17 |
 | `PomodoroAdvancePhaseTest` | `advancePhaseIfExpired`, BREAK/LONG_BREAK, WS, выборка | 6 |
 | `StudyTaskControllerTest` | Таски, лайки, leaderboard, идемпотентность, не участник | 12 |
 | `RoomBotControllerTest` | Активация бота целей, автогенерация, break-триггер, негативные кейсы | 6 |

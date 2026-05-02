@@ -10,6 +10,7 @@ TZ all.md
 TZ-BACKEND.md
 TZ_SyncRoom_VKR_formatted.docx
 export_tz_vkr_docx.py
+yandex-object-storage-cdn.md
 img-generated/*.png
 gartic-assets/
 inference-mock/__pycache__

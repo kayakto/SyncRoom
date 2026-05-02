@@ -23,8 +23,10 @@ import ru.syncroom.study.domain.RoomBot;
 import ru.syncroom.study.domain.StudyTask;
 import ru.syncroom.study.domain.BotGoalTemplate;
 import ru.syncroom.study.repository.BotGoalTemplateRepository;
+import ru.syncroom.study.dto.PomodoroStartRequest;
 import ru.syncroom.study.repository.RoomBotRepository;
 import ru.syncroom.study.repository.StudyTaskRepository;
+import ru.syncroom.study.service.PomodoroService;
 import ru.syncroom.study.ws.StudyTaskWsEvent;
 import ru.syncroom.study.ws.StudyTaskWsEventType;
 import ru.syncroom.users.domain.AuthProvider;
@@ -82,6 +84,9 @@ class RoomBotControllerTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private PomodoroService pomodoroService;
 
     @MockitoBean
     private SimpMessagingTemplate messagingTemplate;
@@ -152,6 +157,17 @@ class RoomBotControllerTest {
                 .build());
     }
 
+    private User pomodoroBotUser() {
+        return userRepository.findByEmail("pomodorobot@syncroom.local")
+                .orElseGet(() -> userRepository.save(User.builder()
+                        .name("PomodoroBot")
+                        .email("pomodorobot@syncroom.local")
+                        .provider(AuthProvider.EMAIL)
+                        .passwordHash("hashed")
+                        .createdAt(OffsetDateTime.now())
+                        .build()));
+    }
+
     @Test
     @DisplayName("POST activate - активирует мотивационного бота и возвращает его состояние")
     void activateBot_success() throws Exception {
@@ -203,28 +219,21 @@ class RoomBotControllerTest {
                         .content("{\"goalCount\": 1, \"autoSuggest\": true, \"suggestOnBreak\": true}"))
                 .andExpect(status().isOk());
 
-        mockMvc.perform(post("/api/rooms/{roomId}/pomodoro/start", room.getId())
-                        .header("Authorization", auth())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"workDuration\": 120, \"breakDuration\": 60, \"roundsTotal\": 2}"))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.phase").value("WORK"));
+        PomodoroStartRequest startReq = new PomodoroStartRequest();
+        startReq.setWorkDuration(120);
+        startReq.setBreakDuration(60);
+        startReq.setRoundsTotal(2);
+        pomodoroService.startByBot(room.getId(), pomodoroBotUser().getId(), startReq);
 
         List<StudyTask> afterStart = studyTaskRepository.findByRoom_IdOrderByUser_IdAscSortOrderAsc(room.getId());
         assertEquals(1, afterStart.size());
 
-        mockMvc.perform(post("/api/rooms/{roomId}/pomodoro/skip", room.getId())
-                        .header("Authorization", auth()))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.phase").value("BREAK"));
+        pomodoroService.advancePhaseForRoom(room.getId());
 
         List<StudyTask> afterBreak = studyTaskRepository.findByRoom_IdOrderByUser_IdAscSortOrderAsc(room.getId());
         assertEquals(1, afterBreak.size());
 
-        mockMvc.perform(post("/api/rooms/{roomId}/pomodoro/skip", room.getId())
-                        .header("Authorization", auth()))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.phase").value("WORK"));
+        pomodoroService.advancePhaseForRoom(room.getId());
 
         List<StudyTask> afterSecondWork = studyTaskRepository.findByRoom_IdOrderByUser_IdAscSortOrderAsc(room.getId());
         assertEquals(2, afterSecondWork.size());
@@ -274,17 +283,13 @@ class RoomBotControllerTest {
                         .content("{\"goalCount\": 1, \"autoSuggest\": false, \"suggestOnBreak\": false}"))
                 .andExpect(status().isOk());
 
-        mockMvc.perform(post("/api/rooms/{roomId}/pomodoro/start", room.getId())
-                        .header("Authorization", auth())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"workDuration\": 120, \"breakDuration\": 60, \"roundsTotal\": 2}"))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.phase").value("WORK"));
+        PomodoroStartRequest startReq = new PomodoroStartRequest();
+        startReq.setWorkDuration(120);
+        startReq.setBreakDuration(60);
+        startReq.setRoundsTotal(2);
+        pomodoroService.startByBot(room.getId(), pomodoroBotUser().getId(), startReq);
 
-        mockMvc.perform(post("/api/rooms/{roomId}/pomodoro/skip", room.getId())
-                        .header("Authorization", auth()))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.phase").value("BREAK"));
+        pomodoroService.advancePhaseForRoom(room.getId());
 
         List<StudyTask> tasksInRoom = studyTaskRepository.findByRoom_IdOrderByUser_IdAscSortOrderAsc(room.getId());
         assertEquals(0, tasksInRoom.size());
@@ -296,7 +301,7 @@ class RoomBotControllerTest {
     }
 
     @Test
-    @DisplayName("DELETE pomodoro очищает цели MotivBot в комнате")
+    @DisplayName("Остановка помодоро через сервис очищает цели MotivBot в комнате")
     void stopPomodoro_clearsBotGoals() throws Exception {
         Room room = createStudyRoom();
         addParticipant(room, user);
@@ -308,15 +313,10 @@ class RoomBotControllerTest {
                 .andExpect(status().isOk());
         assertEquals(0, studyTaskRepository.findByRoom_IdOrderByUser_IdAscSortOrderAsc(room.getId()).size());
 
-        mockMvc.perform(post("/api/rooms/{roomId}/pomodoro/start", room.getId())
-                        .header("Authorization", auth()))
-                .andExpect(status().isCreated());
+        pomodoroService.startByBot(room.getId(), pomodoroBotUser().getId(), new PomodoroStartRequest());
         assertEquals(2, studyTaskRepository.findByRoom_IdOrderByUser_IdAscSortOrderAsc(room.getId()).size());
 
-        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
-                        .delete("/api/rooms/{roomId}/pomodoro", room.getId())
-                        .header("Authorization", auth()))
-                .andExpect(status().isNoContent());
+        pomodoroService.stop(room.getId(), user.getId());
 
         assertEquals(0, studyTaskRepository.findByRoom_IdOrderByUser_IdAscSortOrderAsc(room.getId()).size());
     }

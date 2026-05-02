@@ -35,8 +35,17 @@ public class PomodoroService {
 
     private static final String TOPIC_TEMPLATE = "/topic/room/%s/pomodoro";
 
-    /** Помодоро доступен только в учебной комнате. */
+    /** Помодоро только в учебной комнате (`study`). */
     private static final Set<String> POMODORO_ALLOWED_CONTEXTS = Set.of("study");
+
+    /**
+     * Значения по умолчанию для новой сессии (секунды), если бот не передал своё в {@link PomodoroStartRequest}.
+     * Классический цикл: 4 раунда работы по 25 мин, короткий перерыв 5 мин, длинный 15 мин после последнего раунда.
+     */
+    public static final int DEFAULT_WORK_DURATION_SECONDS = 1500;
+    public static final int DEFAULT_BREAK_DURATION_SECONDS = 300;
+    public static final int DEFAULT_LONG_BREAK_DURATION_SECONDS = 900;
+    public static final int DEFAULT_ROUNDS_TOTAL = 4;
 
     private final PomodoroSessionRepository pomodoroRepo;
     private final RoomRepository roomRepository;
@@ -83,6 +92,7 @@ public class PomodoroService {
                 .id(s.getId().toString())
                 .roomId(s.getRoom().getId().toString())
                 .startedBy(toUserDto(s.getStartedBy()))
+                .serverControlled(true)
                 .phase(s.getPhase())
                 .currentRound(s.getCurrentRound())
                 .roundsTotal(s.getRoundsTotal())
@@ -94,22 +104,20 @@ public class PomodoroService {
     }
 
     @Transactional(readOnly = true)
-    public PomodoroResponse get(UUID roomId) {
+    public PomodoroResponse get(UUID roomId, UUID userId) {
         Room room = requireRoom(roomId);
         assertPomodoroAllowed(room);
+        if (!participantRepository.existsByRoomIdAndUserId(roomId, userId)) {
+            throw new BadRequestException("User is not a participant of this room");
+        }
         PomodoroSession session = pomodoroRepo.findByRoomId(roomId)
                 .orElseThrow(() -> new NotFoundException("Pomodoro is not running in this room"));
         return toResponse(session);
     }
 
-    @Transactional
-    public PomodoroResponse start(UUID roomId, UUID userId, PomodoroStartRequest request) {
-        if (!participantRepository.existsByRoomIdAndUserId(roomId, userId)) {
-            throw new BadRequestException("User is not a participant of this room");
-        }
-        return startInternal(roomId, userId, request);
-    }
-
+    /**
+     * Запуск общего помодоро только сервером (например Pomodoro Manager bot). Участники не вызывают старт с клиента.
+     */
     @Transactional
     public PomodoroResponse startByBot(UUID roomId, UUID botUserId, PomodoroStartRequest request) {
         return startInternal(roomId, botUserId, request);
@@ -132,10 +140,10 @@ public class PomodoroService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new NotFoundException("User not found"));
 
-        int work = request.getWorkDuration() != null ? request.getWorkDuration() : 1500;
-        int brk = request.getBreakDuration() != null ? request.getBreakDuration() : 300;
-        int longBrk = request.getLongBreakDuration() != null ? request.getLongBreakDuration() : 900;
-        int rounds = request.getRoundsTotal() != null ? request.getRoundsTotal() : 4;
+        int work = request.getWorkDuration() != null ? request.getWorkDuration() : DEFAULT_WORK_DURATION_SECONDS;
+        int brk = request.getBreakDuration() != null ? request.getBreakDuration() : DEFAULT_BREAK_DURATION_SECONDS;
+        int longBrk = request.getLongBreakDuration() != null ? request.getLongBreakDuration() : DEFAULT_LONG_BREAK_DURATION_SECONDS;
+        int rounds = request.getRoundsTotal() != null ? request.getRoundsTotal() : DEFAULT_ROUNDS_TOTAL;
 
         OffsetDateTime phaseEndAt = OffsetDateTime.now().plusSeconds(work);
 
@@ -153,7 +161,7 @@ public class PomodoroService {
 
         PomodoroSession saved = pomodoroRepo.save(session);
 
-        timerService.schedulePhaseEnd(roomId, work, () -> skip(roomId));
+        timerService.schedulePhaseEnd(roomId, work, () -> advancePhaseForRoom(roomId));
 
         PomodoroResponse response = toResponse(saved);
         publish(roomId, PomodoroEventType.POMODORO_STARTED, response);
@@ -167,67 +175,6 @@ public class PomodoroService {
 
         log.debug("Pomodoro started in room {} by user {}", roomId, userId);
         return response;
-    }
-
-    @Transactional
-    public PomodoroResponse pause(UUID roomId) {
-        assertPomodoroAllowed(requireRoom(roomId));
-        PomodoroSession session = pomodoroRepo.findByRoomId(roomId)
-                .orElseThrow(() -> new NotFoundException("Pomodoro is not running in this room"));
-
-        if ("PAUSED".equals(session.getPhase()) || "FINISHED".equals(session.getPhase())) {
-            throw new BadRequestException("Pomodoro is not active");
-        }
-
-        if (session.getPhaseEndAt() == null) {
-            throw new BadRequestException("phaseEndAt is null");
-        }
-
-        long remainingSeconds = session.getPhaseEndAt().toEpochSecond() - OffsetDateTime.now().toEpochSecond();
-        if (remainingSeconds < 0) remainingSeconds = 0;
-
-        session.setPausedPhase(session.getPhase());
-        session.setRemainingSeconds((int) remainingSeconds);
-        session.setPhase("PAUSED");
-        session.setPhaseEndAt(null);
-        pomodoroRepo.save(session);
-
-        timerService.cancel(roomId);
-
-        publish(roomId, PomodoroEventType.POMODORO_PAUSED,
-                Map.of("phase", session.getPhase(), "remainingSeconds", remainingSeconds));
-
-        return toResponse(session);
-    }
-
-    @Transactional
-    public PomodoroResponse resume(UUID roomId) {
-        assertPomodoroAllowed(requireRoom(roomId));
-        PomodoroSession session = pomodoroRepo.findByRoomId(roomId)
-                .orElseThrow(() -> new NotFoundException("Pomodoro is not running in this room"));
-
-        if (!"PAUSED".equals(session.getPhase())) {
-            throw new BadRequestException("Pomodoro is not paused");
-        }
-
-        if (session.getRemainingSeconds() == null || session.getPausedPhase() == null) {
-            throw new BadRequestException("Pomodoro pause state is incomplete");
-        }
-
-        long remaining = session.getRemainingSeconds();
-        OffsetDateTime newEnd = OffsetDateTime.now().plusSeconds(remaining);
-        session.setPhase(session.getPausedPhase());
-        session.setPhaseEndAt(newEnd);
-        session.setPausedPhase(null);
-        session.setRemainingSeconds(null);
-        pomodoroRepo.save(session);
-
-        timerService.schedulePhaseEnd(roomId, remaining, () -> skip(roomId));
-
-        publish(roomId, PomodoroEventType.POMODORO_RESUMED,
-                Map.of("phase", session.getPhase(), "phaseEndAt", newEnd.toInstant().toString()));
-
-        return toResponse(session);
     }
 
     /**
@@ -254,15 +201,17 @@ public class PomodoroService {
         transitionToNextPhase(session);
     }
 
+    /**
+     * Переход к следующей фазе по срабатыванию серверного таймера (или тестам). Не для вызова с клиента.
+     */
     @Transactional
-    public PomodoroResponse skip(UUID roomId) {
-        assertPomodoroAllowed(requireRoom(roomId));
+    public PomodoroResponse advancePhaseForRoom(UUID roomId) {
         PomodoroSession session = pomodoroRepo.findByRoomIdForUpdate(roomId)
                 .orElseThrow(() -> new NotFoundException("Pomodoro is not running in this room"));
 
         String current = session.getPhase();
         if ("PAUSED".equals(current) || "FINISHED".equals(current)) {
-            throw new BadRequestException("Cannot skip phase: " + current);
+            return toResponse(session);
         }
         return transitionToNextPhase(session);
     }
@@ -306,7 +255,7 @@ public class PomodoroService {
             timerService.cancel(roomId);
         } else {
             session.setPhaseEndAt(OffsetDateTime.now().plusSeconds(durationSeconds));
-            timerService.schedulePhaseEnd(roomId, durationSeconds, () -> skip(roomId));
+            timerService.schedulePhaseEnd(roomId, durationSeconds, () -> advancePhaseForRoom(roomId));
         }
 
         pomodoroRepo.save(session);
@@ -338,9 +287,20 @@ public class PomodoroService {
         return toResponse(session);
     }
 
+    /**
+     * Сброс сессии и целей бота в комнате. Не выставляется в REST — для тестов и внутренних сценариев.
+     */
     @Transactional
-    public void stop(UUID roomId) {
-        assertPomodoroAllowed(requireRoom(roomId));
+    public void stop(UUID roomId, UUID userId) {
+        Room room = requireRoom(roomId);
+        assertPomodoroAllowed(room);
+        if (!participantRepository.existsByRoomIdAndUserId(roomId, userId)) {
+            throw new BadRequestException("User is not a participant of this room");
+        }
+        stopInternal(roomId);
+    }
+
+    private void stopInternal(UUID roomId) {
         pomodoroRepo.deleteByRoomId(roomId);
         motivationalGoalBotService.clearBotGoalsInRoom(roomId);
         publish(roomId, PomodoroEventType.POMODORO_STOPPED, Map.of());

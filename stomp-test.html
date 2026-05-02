@@ -114,23 +114,20 @@
   <button onclick="projectorControl()">🎛 SEND PROJECTOR_CONTROL (WS)</button>
 
   <!-- ─── ПОМОДОРО ──────────────────────────────────────────────────────── -->
-  <h3>6. Помодоро (study-комнаты)</h3>
+  <h3>6. Помодоро (только study-комната)</h3>
+  <p class="hint" style="margin:0 0 8px 0; font-size:13px; opacity:.9">Таймер крутится на сервере, только в <code>study</code>. Старт — через бота. По HTTP доступен только <strong>GET /pomodoro</strong> (стоп/скип/пауза с клиента нет).</p>
   <div class="grid2">
     <div>
       <label>Room ID (для помодоро)</label>
       <input id="pomodoroRoomId" placeholder="UUID комнаты (обычно = Room ID выше)" />
     </div>
     <div>
-      <label>Work / Break / LongBreak / Rounds</label>
-      <input id="pomodoroConfig" value="1500,300,900,4" placeholder="1500,300,900,4" />
+      <label>Справка (длительности задаёт конфиг бота, не это поле)</label>
+      <input value="Подписка + GET / DELETE" readonly />
     </div>
   </div>
   <div class="row">
-    <button class="green" onclick="pomodoroStart()">▶ POST /pomodoro/start</button>
-    <button onclick="pomodoroPause()">⏸ POST /pomodoro/pause</button>
-    <button onclick="pomodoroResume()">⏯ POST /pomodoro/resume</button>
-    <button onclick="pomodoroSkip()">⏭ POST /pomodoro/skip</button>
-    <button class="red" onclick="pomodoroStop()">⏹ DELETE /pomodoro</button>
+    <button onclick="pomodoroGet()">📥 GET /pomodoro</button>
     <button onclick="subPomodoro()">👂 Subscribe /pomodoro</button>
   </div>
 
@@ -351,7 +348,7 @@
         log('⏱ ['+e.type+'] '+JSON.stringify(e.payload, null, 2), 'in');
       });
       log('👂 Subscribed: '+dest, 'out');
-      log('Используй POST /pomodoro/start/pause/resume/skip/stop, чтобы увидеть события POMODORO_*.', 'info');
+      log('События POMODORO_* после серверного старта (бот). Клиенту доступен только GET /pomodoro.', 'info');
     }
 
     function subTasks() {
@@ -604,61 +601,19 @@
 
     /* ── ПОМОДОРО REST ──────────────────────────────────────────────────── */
 
-    function parsePomodoroConfig() {
-      const raw = $('pomodoroConfig').value.trim();
-      if (!raw) return {};
-      const parts = raw.split(',').map(x => parseInt(x.trim(), 10)).filter(x => !isNaN(x));
-      const [work, brk, longBrk, rounds] = parts;
-      const body = {};
-      if (work) body.workDuration = work;
-      if (brk) body.breakDuration = brk;
-      if (longBrk) body.longBreakDuration = longBrk;
-      if (rounds) body.roundsTotal = rounds;
-      return body;
-    }
-
-    function pomodoroStart() {
+    function pomodoroGet() {
       const r = pridPomodoro();
       if (!r) { log('⚠️ Нужен Room ID для помодоро', 'err'); return; }
-      const body = parsePomodoroConfig();
-      const url = `/api/rooms/${r}/pomodoro/start`;
-      log(`➡️ POST ${url} body=${JSON.stringify(body)}`, 'out');
-      fetch('http://localhost:8080'+url, {
-        method: 'POST',
-        headers: {
-          'Authorization': 'Bearer '+tok(),
-          'Content-Type': 'application/json'
-        },
-        body: Object.keys(body).length ? JSON.stringify(body) : '{}'
+      const url = `/api/rooms/${r}/pomodoro`;
+      log(`➡️ GET ${url}`, 'out');
+      fetch('http://localhost:8080' + url, {
+        method: 'GET',
+        headers: { 'Authorization': 'Bearer ' + tok() }
       }).then(async res => {
         let txt = await res.text();
-        try { txt = JSON.stringify(JSON.parse(txt), null, 2); } catch(_) {}
+        try { txt = JSON.stringify(JSON.parse(txt), null, 2); } catch (_) {}
         log(`← ${res.status}: ${txt}`, res.ok ? 'in' : 'err');
-      }).catch(e => log('❌ '+e, 'err'));
-    }
-
-    function pomodoroPause() {
-      const r = pridPomodoro();
-      if (!r) { log('⚠️ Нужен Room ID для помодоро', 'err'); return; }
-      api('POST', `/api/rooms/${r}/pomodoro/pause`);
-    }
-
-    function pomodoroResume() {
-      const r = pridPomodoro();
-      if (!r) { log('⚠️ Нужен Room ID для помодоро', 'err'); return; }
-      api('POST', `/api/rooms/${r}/pomodoro/resume`);
-    }
-
-    function pomodoroSkip() {
-      const r = pridPomodoro();
-      if (!r) { log('⚠️ Нужен Room ID для помодоро', 'err'); return; }
-      api('POST', `/api/rooms/${r}/pomodoro/skip`);
-    }
-
-    function pomodoroStop() {
-      const r = pridPomodoro();
-      if (!r) { log('⚠️ Нужен Room ID для помодоро', 'err'); return; }
-      api('DELETE', `/api/rooms/${r}/pomodoro`);
+      }).catch(e => log('❌ ' + e, 'err'));
     }
 
     /* ── ИГРЫ REST + WS ─────────────────────────────────────────────────── */
