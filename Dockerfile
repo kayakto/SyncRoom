@@ -21,8 +21,8 @@ WORKDIR /app
 RUN addgroup -S spring && adduser -S spring -G spring
 USER spring:spring
 
-# Копируем JAR из стадии сборки
-COPY --from=build /app/build/libs/*.jar app.jar
+# Копируем fat JAR (имя задано в build.gradle.kts — см. tasks.bootJar)
+COPY --from=build /app/build/libs/syncroom-boot.jar app.jar
 
 # Открываем порт
 EXPOSE 8080

@@ -60,6 +60,11 @@ dependencies {
     testImplementation("com.h2database:h2") // In-memory database for tests
 }
 
+tasks.bootJar {
+    // Single predictable name for Docker COPY (avoids *-plain.jar alongside the fat jar).
+    archiveFileName.set("syncroom-boot.jar")
+}
+
 tasks.test {
     useJUnitPlatform()
 }
