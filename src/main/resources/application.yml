@@ -22,6 +22,8 @@ spring:
 
 server:
   port: 8080
+  # За nginx / TLS: чтобы схема и host в запросе (и в OpenAPI для Swagger) были https и публичный домен.
+  forward-headers-strategy: framework
 
 logging:
   level:

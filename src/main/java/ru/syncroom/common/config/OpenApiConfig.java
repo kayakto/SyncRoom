@@ -2,13 +2,15 @@ package ru.syncroom.common.config;
 
 import io.swagger.v3.oas.models.Components;
 import io.swagger.v3.oas.models.OpenAPI;
-import io.swagger.v3.oas.models.info.Contact;
 import io.swagger.v3.oas.models.info.Info;
-import io.swagger.v3.oas.models.info.License;
 import io.swagger.v3.oas.models.security.SecurityRequirement;
 import io.swagger.v3.oas.models.security.SecurityScheme;
+import io.swagger.v3.oas.models.servers.Server;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+
+import java.util.List;
 
 /**
  * OpenAPI (Swagger) configuration.
@@ -17,9 +19,18 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class OpenApiConfig {
 
+    @Value("${syncroom.storage.public-base-url:http://localhost:8080}")
+    private String publicBaseUrl;
+
     @Bean
     public OpenAPI customOpenAPI() {
+        String base = publicBaseUrl.endsWith("/")
+                ? publicBaseUrl.substring(0, publicBaseUrl.length() - 1)
+                : publicBaseUrl;
         return new OpenAPI()
+                .servers(List.of(new Server()
+                        .url(base)
+                        .description("Публичный URL API (APP_PUBLIC_BASE_URL; для Swagger Try it out по HTTPS)")))
                 .info(new Info()
                         .title("SyncRoom API")
                         .version("1.0.0")
