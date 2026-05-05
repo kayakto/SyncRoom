@@ -1,0 +1,78 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: syncroom-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - syncroom-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: syncroom-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - syncroom-network
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: syncroom-app
+    restart: unless-stopped
+    env_file:
+      - .env.prod
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+    depends_on:
+      - postgres
+      - redis
+      - inference-mock
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./game-traces:/tmp/game-traces
+      - ./data/storage:/tmp/syncroom-storage
+    networks:
+      - syncroom-network
+
+  inference-mock:
+    build:
+      context: ./inference-mock
+      dockerfile: Dockerfile
+    container_name: syncroom-inference-mock
+    restart: unless-stopped
+    networks:
+      - syncroom-network
+
+  frontend:
+    build:
+      context: ../SyncRoom-web
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: https://syncroom.ru
+        VITE_WS_URL: wss://syncroom.ru/ws-stomp
+    container_name: syncroom-frontend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:80"
+    networks:
+      - syncroom-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  syncroom-network:
+    driver: bridge

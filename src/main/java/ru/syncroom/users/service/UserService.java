@@ -15,6 +15,7 @@ import ru.syncroom.users.dto.ProfileResponse;
 import ru.syncroom.users.dto.UpdateProfileRequest;
 import ru.syncroom.users.dto.UserStatsResponse;
 import ru.syncroom.users.repository.UserRepository;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.time.DayOfWeek;
 import java.time.OffsetDateTime;
@@ -33,6 +34,7 @@ public class UserService {
     private final UserRepository userRepository;
     private final StudyTaskRepository studyTaskRepository;
     private final TaskLikeRepository taskLikeRepository;
+    private final AvatarStorage avatarStorage;
 
     /**
      * Gets user profile by ID.
@@ -76,10 +78,12 @@ public class UserService {
             }
         }
         
-        // Обновляем поля
+        // Обновляем поля профиля. Аватар обновляется через отдельный upload endpoint.
         user.setName(request.getName());
         user.setEmail(request.getEmail());
-        user.setAvatarUrl(request.getAvatarUrl());
+        if (request.getAvatarUrl() != null && !request.getAvatarUrl().isBlank()) {
+            user.setAvatarUrl(request.getAvatarUrl());
+        }
         
         user = userRepository.save(user);
         
@@ -92,6 +96,23 @@ public class UserService {
                 .provider(user.getProvider().getValue())
                 .avatarUrl(user.getAvatarUrl())
                 .build();
+    }
+
+    /**
+     * Загрузка нового аватара (PNG/JPEG/WebP) в хранилище; в профиль записывается публичный URL (API или CDN).
+     */
+    @Transactional
+    public ProfileResponse uploadAvatar(UUID userId, MultipartFile file) throws java.io.IOException {
+        if (file == null || file.isEmpty()) {
+            throw new BadRequestException("Empty file");
+        }
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new NotFoundException("User not found"));
+        String url = avatarStorage.saveAndPublicUrl(userId, file.getBytes(), file.getContentType());
+        user.setAvatarUrl(url);
+        userRepository.save(user);
+        log.debug("Updated avatar for user {}", userId);
+        return getProfile(userId);
     }
 
     @Transactional(readOnly = true)

@@ -35,6 +35,7 @@ import ru.syncroom.rooms.ws.SeatTakenPayload;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -42,8 +43,6 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 public class SeatBotService {
-
-    public static final String DEFAULT_SEAT_BOT_AVATAR = "/icons/icon-192.png";
 
     private final RoomRepository roomRepository;
     private final SeatRepository seatRepository;
@@ -95,7 +94,7 @@ public class SeatBotService {
         return SeatBotCatalogEntryDto.builder()
                 .botType(k.getTypeKey())
                 .name(k.getDisplayName())
-                .avatarUrl(DEFAULT_SEAT_BOT_AVATAR)
+                .avatarUrl(resolveBotAvatarUrl(k))
                 .description(k.getDescription())
                 .supportedContexts(k.getSupportedContextsUpper())
                 .behaviour(SeatBotCatalogEntryDto.BehaviourDto.builder()
@@ -159,7 +158,7 @@ public class SeatBotService {
                 .botType(kind.getTypeKey())
                 .seat(seat)
                 .name(kind.getDisplayName())
-                .avatarUrl(DEFAULT_SEAT_BOT_AVATAR)
+                .avatarUrl(resolveBotAvatarUrl(kind))
                 .build();
         bot = roomSeatBotRepository.save(bot);
         roomSeatBotRepository.flush();
@@ -306,5 +305,17 @@ public class SeatBotService {
                 .observerCount(observerCount)
                 .build();
         messagingTemplate.convertAndSend(String.format(SEATS_TOPIC, roomId), RoomEvent.of(RoomEventType.SEAT_LEFT, payload));
+    }
+
+    private String resolveBotAvatarUrl(SeatBotKind kind) {
+        String candidate = switch (kind) {
+            case WORK_FOCUS_BUDDY -> seatBotProperties.getWorkFocusBuddyAvatarUrl();
+            case STUDY_HELPER -> seatBotProperties.getStudyHelperAvatarUrl();
+            case SPORT_CHEERLEADER -> seatBotProperties.getSportCheerleaderAvatarUrl();
+        };
+        if (candidate != null && !candidate.isBlank()) {
+            return candidate;
+        }
+        return Objects.requireNonNullElse(seatBotProperties.getDefaultAvatarUrl(), "/icons/icon-192.png");
     }
 }

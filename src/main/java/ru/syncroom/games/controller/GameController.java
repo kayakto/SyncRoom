@@ -21,8 +21,10 @@ import ru.syncroom.games.dto.CreateGameRequest;
 import ru.syncroom.games.dto.GarticDrawingUploadResponse;
 import ru.syncroom.games.dto.GameResponse;
 import ru.syncroom.games.service.GameService;
+import ru.syncroom.games.service.GarticDrawingServeResult;
 import ru.syncroom.users.domain.User;
 
+import java.net.URI;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -214,15 +216,20 @@ public class GameController {
     })
     @GetMapping("/api/games/{gameId}/gartic/drawings/{assetId}")
     @SecurityRequirement(name = "Bearer Authentication")
-    public ResponseEntity<byte[]> downloadGarticDrawing(
+    public ResponseEntity<?> downloadGarticDrawing(
             @PathVariable UUID gameId,
             @PathVariable UUID assetId,
             @AuthenticationPrincipal User currentUser
     ) {
-        byte[] png = gameService.getGarticDrawingAsset(gameId, currentUser.getId(), assetId);
+        GarticDrawingServeResult r = gameService.serveGarticDrawing(gameId, currentUser.getId(), assetId);
+        if (r.redirectUrl().isPresent()) {
+            return ResponseEntity.status(HttpStatus.FOUND)
+                    .location(URI.create(r.redirectUrl().get()))
+                    .build();
+        }
         return ResponseEntity.ok()
                 .contentType(MediaType.IMAGE_PNG)
-                .body(png);
+                .body(r.body());
     }
 
     @Operation(

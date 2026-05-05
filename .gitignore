@@ -6,13 +6,15 @@ build/
 FEATURES_BACKEND_SPEC.md
 BACKEND_TZ.md
 TZ.md
-TZ all.md
+TZ*
+_docx_extract/
+docs/
 TZ-BACKEND.md
 TZ_SyncRoom_VKR_formatted.docx
-export_tz_vkr_docx.py
-yandex-object-storage-cdn.md
+scripts/
 img-generated/*.png
 gartic-assets/
+data/storage/
 inference-mock/__pycache__
 local-draw-service/__pycache__
 game-traces/

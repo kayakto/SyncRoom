@@ -40,6 +40,10 @@ dependencies {
     
     // Jackson for Java 8 Time
     implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310")
+
+    // Yandex Object Storage / S3-compatible API
+    implementation(platform("software.amazon.awssdk:bom:2.29.51"))
+    implementation("software.amazon.awssdk:s3")
     
     // SpringDoc OpenAPI (Swagger)
     implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.4")

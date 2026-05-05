@@ -17,8 +17,8 @@ spring:
     locations: classpath:db/migration
   servlet:
     multipart:
-      max-file-size: 3MB
-      max-request-size: 3MB
+      max-file-size: 5MB
+      max-request-size: 5MB
 
 server:
   port: 8080
@@ -53,6 +53,7 @@ bots:
     guess-url: ${BOTS_INFERENCE_GUESS_URL:}
     text-url: ${BOTS_INFERENCE_TEXT_URL:}
 
+# Файлы Gartic и медиа: см. syncroom.storage (local: data-dir/gartic, s3: префикс в бакете).
 games:
   bot:
     schedule-after-commit: ${GAMES_BOT_SCHEDULE_AFTER_COMMIT:true}
@@ -61,11 +62,26 @@ games:
   trace:
     enabled: ${GAMES_TRACE_ENABLED:true}
     dir: ${GAMES_TRACE_DIR:/tmp/game-traces}
-  gartic-assets:
-    dir: ${GARTIC_ASSETS_DIR:./gartic-assets}
   gartic:
     text-timeout-sec: ${GAMES_GARTIC_TEXT_TIMEOUT_SEC:60}
     draw-timeout-sec: ${GAMES_GARTIC_DRAW_TIMEOUT_SEC:180}
+
+syncroom:
+  storage:
+    type: ${SYNCROOM_STORAGE_TYPE:local}
+    # Публичный URL API (OAuth, local-аватары /api/media/...).
+    public-base-url: ${APP_PUBLIC_BASE_URL:http://localhost:8080}
+    # Для S3: URL CDN для прямых ссылок на файлы в бакете; если пусто — используется public-base-url.
+    media-public-base-url: ${APP_CDN_PUBLIC_URL:}
+    local:
+      data-dir: ${SYNCROOM_STORAGE_LOCAL_DIR:./data/storage}
+    s3:
+      endpoint: ${S3_ENDPOINT:https://storage.yandexcloud.net}
+      region: ${S3_REGION:ru-central1}
+      bucket: ${S3_BUCKET:}
+      access-key: ${S3_ACCESS_KEY:}
+      secret-key: ${S3_SECRET_KEY:}
+      key-prefix: ${S3_KEY_PREFIX:syncroom}
 
 app:
   cors:
@@ -91,3 +107,9 @@ app:
   seat-bots:
     max-per-room: ${APP_SEAT_BOTS_MAX_PER_ROOM:3}
     study-helper-work-like-probability: ${APP_SEAT_BOTS_STUDY_LIKE_PROB:0.3}
+    # Полный URL дефолтной аватарки seat-бота (CDN или /icons/... на API).
+    default-avatar-url: ${APP_SEAT_BOT_DEFAULT_AVATAR_URL:/icons/icon-192.png}
+    # Можно задать разные аватарки для каждого botType.
+    work-focus-buddy-avatar-url: ${APP_SEAT_BOT_WORK_FOCUS_BUDDY_AVATAR_URL:}
+    study-helper-avatar-url: ${APP_SEAT_BOT_STUDY_HELPER_AVATAR_URL:}
+    sport-cheerleader-avatar-url: ${APP_SEAT_BOT_SPORT_CHEERLEADER_AVATAR_URL:}

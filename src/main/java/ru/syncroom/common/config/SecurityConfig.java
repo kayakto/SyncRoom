@@ -52,6 +52,7 @@ public class SecurityConfig {
                         .requestMatchers("/api/auth/csrf").permitAll()
                         .requestMatchers("/api/auth/logout").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/push/vapid-public-key").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/media/avatars/**").permitAll()
                         // WebSocket handshake — auth happens inside ChannelInterceptor
                         .requestMatchers("/ws/**").permitAll()
                         .requestMatchers("/ws-stomp/**").permitAll()

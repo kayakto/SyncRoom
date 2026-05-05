@@ -1,6 +1,7 @@
 package ru.syncroom.users.controller;
 
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.parameters.RequestBody;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -9,9 +10,11 @@ import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 import ru.syncroom.users.domain.User;
 import ru.syncroom.users.dto.ProfileResponse;
 import ru.syncroom.users.dto.UpdateProfileRequest;
@@ -65,6 +68,38 @@ public class UserController {
     ) {
         ProfileResponse updatedProfile = userService.updateProfile(user.getId(), request);
         return ResponseEntity.ok(updatedProfile);
+    }
+
+    @Operation(
+            summary = "Загрузить аватар",
+            description = "Multipart поле `file` — PNG, JPEG или WebP (до 2 MB). В профиль сохраняется публичный URL (local: API /api/media/avatars/{userId}, s3: CDN).",
+            requestBody = @RequestBody(
+                    required = true,
+                    content = @Content(
+                            mediaType = MediaType.MULTIPART_FORM_DATA_VALUE,
+                            schema = @Schema(implementation = UploadAvatarRequest.class)
+                    )
+            )
+    )
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Аватар успешно загружен",
+                    content = @Content(schema = @Schema(implementation = ProfileResponse.class))),
+            @ApiResponse(responseCode = "400", description = "Неверный файл"),
+            @ApiResponse(responseCode = "401", description = "Не авторизован"),
+            @ApiResponse(responseCode = "404", description = "Пользователь не найден")
+    })
+    @PostMapping(value = "/me/avatar", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<ProfileResponse> uploadAvatar(
+            @AuthenticationPrincipal User user,
+            @RequestPart("file") MultipartFile file
+    ) throws java.io.IOException {
+        return ResponseEntity.ok(userService.uploadAvatar(user.getId(), file));
+    }
+
+    @Schema(name = "UploadAvatarRequest", description = "Multipart-запрос загрузки аватара")
+    private static class UploadAvatarRequest {
+        @Schema(description = "Файл изображения (PNG/JPEG/WebP)", type = "string", format = "binary", requiredMode = Schema.RequiredMode.REQUIRED)
+        public MultipartFile file;
     }
 
     @Operation(

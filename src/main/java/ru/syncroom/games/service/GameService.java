@@ -1378,7 +1378,7 @@ public class GameService {
         if (GarticDrawingAssetStorage.isAssetRef(storedContent)) {
             UUID aid = UUID.fromString(storedContent.substring(GarticDrawingAssetStorage.ASSET_PREFIX.length()));
             target.put("drawingAssetId", aid.toString());
-            target.put("imageUrl", "/api/games/" + gameId + "/gartic/drawings/" + aid);
+            target.put("imageUrl", garticDrawingAssetStorage.publicImageUrl(gameId, aid));
         } else if (storedContent != null && storedContent.startsWith("data:image/")) {
             target.put("imageBase64", storedContent);
         }
@@ -1389,7 +1389,7 @@ public class GameService {
             UUID aid = UUID.fromString(storedContent.substring(GarticDrawingAssetStorage.ASSET_PREFIX.length()));
             stepMap.put("content", null);
             stepMap.put("drawingAssetId", aid.toString());
-            stepMap.put("imageUrl", "/api/games/" + gameId + "/gartic/drawings/" + aid);
+            stepMap.put("imageUrl", garticDrawingAssetStorage.publicImageUrl(gameId, aid));
         } else {
             stepMap.put("content", storedContent);
         }
@@ -1414,12 +1414,12 @@ public class GameService {
         UUID assetId = garticDrawingAssetStorage.savePngBytes(gameId, pngBytes, GARTIC_IMAGE_MAX_BYTES);
         return Map.of(
                 "drawingAssetId", assetId.toString(),
-                "imageUrl", "/api/games/" + gameId + "/gartic/drawings/" + assetId
+                "imageUrl", garticDrawingAssetStorage.publicImageUrl(gameId, assetId)
         );
     }
 
     @Transactional(readOnly = true)
-    public byte[] getGarticDrawingAsset(UUID gameId, UUID requesterId, UUID assetId) {
+    public GarticDrawingServeResult serveGarticDrawing(UUID gameId, UUID requesterId, UUID assetId) {
         GameSession game = gameSessionRepository.findById(gameId).orElseThrow(() -> new NotFoundException("Game not found"));
         assertGamesAllowed(game.getRoom().getContext());
         if (!roomParticipantRepository.existsByRoomIdAndUserId(game.getRoom().getId(), requesterId)) {
@@ -1428,7 +1428,9 @@ public class GameService {
         if (!garticDrawingAssetStorage.exists(gameId, assetId)) {
             throw new NotFoundException("Drawing asset not found");
         }
-        return garticDrawingAssetStorage.loadPng(gameId, assetId);
+        return garticDrawingAssetStorage.publicDownloadRedirect(gameId, assetId)
+                .map(GarticDrawingServeResult::redirect)
+                .orElseGet(() -> GarticDrawingServeResult.bytes(garticDrawingAssetStorage.loadPng(gameId, assetId)));
     }
 
     private GameResponse toResponse(GameSession session) {
