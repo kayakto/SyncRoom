@@ -10,12 +10,15 @@ import ru.syncroom.users.domain.User;
 public class TopParticipantResponse {
     String id;
 
+    String name;
+
     @JsonProperty("avatar_url")
     String avatarUrl;
 
     public static TopParticipantResponse from(User user) {
         return TopParticipantResponse.builder()
                 .id(user.getId().toString())
+                .name(user.getName())
                 .avatarUrl(user.getAvatarUrl())
                 .build();
     }

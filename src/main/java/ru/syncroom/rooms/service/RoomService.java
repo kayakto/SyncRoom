@@ -242,6 +242,10 @@ public class RoomService {
         }).toList();
     }
 
+    /**
+     * Первые {@code limit} человеческих участников по времени входа (seat-боты без user не включаются).
+     * Участники без аватарки не отфильтровываются — {@code avatar_url} может быть {@code null}.
+     */
     private List<TopParticipantResponse> getTopParticipants(UUID roomId, int limit) {
         return participantRepository.findByRoomId(roomId).stream()
                 .filter(p -> p.getUser() != null)

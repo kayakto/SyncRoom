@@ -188,7 +188,9 @@ class RoomControllerTest {
                                 .andExpect(jsonPath("$[0].observerCount").value(2))
                                 .andExpect(jsonPath("$[0].topParicipants", hasSize(2)))
                                 .andExpect(jsonPath("$[0].topParicipants[*].id",
-                                                containsInAnyOrder(testUser.getId().toString(), second.getId().toString())));
+                                                containsInAnyOrder(testUser.getId().toString(), second.getId().toString())))
+                                .andExpect(jsonPath("$[0].topParicipants[*].name",
+                                                containsInAnyOrder(testUser.getName(), second.getName())));
         }
 
         @Test

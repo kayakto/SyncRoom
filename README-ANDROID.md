@@ -36,7 +36,7 @@
   - `POST /api/rooms/{roomId}/seats/{seatId}/sit`
   - `POST /api/rooms/{roomId}/seats/{seatId}/leave`
   - Топик `/topic/room/{roomId}/seats` с событиями `SEAT_TAKEN` / `SEAT_LEFT` (в payload — актуальные `participantCount` / `observerCount`).
-  - В `RoomResponse`: **`participantCount`** = за столом (занятые места), **`observerCount`** = в комнате без места; в `ParticipantResponse` поле **`role`**: `OBSERVER` | `PARTICIPANT`.
+  - В `RoomResponse`: **`participantCount`** = за столом (занятые места), **`observerCount`** = в комнате без места; **`topParicipants`** — до 5 превью людей (`id`, `name`, `avatar_url`; без аватарки `avatar_url` = null); в `ParticipantResponse` поле **`role`**: `OBSERVER` | `PARTICIPANT`.
 
 - **Seat-боты** (персонажи **за столом**, не путать с игровыми ботами Gartic/Quiplash и не с мотивационным ботом `/bots/motivational-goals`):
   - Доступны только в комнатах с `context`: **`work`**, **`study`**, **`sport`**. В **`leisure`** посадка возвращает `400`.
@@ -1542,15 +1542,15 @@ DELETE /api/users/{userId}/points/{pointId}  → 204
 
 **Счётчики:** `participantCount` — сколько **сидят за столом**; `observerCount` — сколько **в лаунже** (вошли через `/join`, но не заняли место). Сумма совпадает с числом людей в комнате.
   
-**Топ участников:** `topParicipants` (именно так в JSON) — массив до 5 элементов формата `{ "id": "uuid", "avatar_url": "https://..." }`.
+**Топ участников:** `topParicipants` (именно так в JSON) — массив до 5 элементов формата `{ "id": "uuid", "name": "Иван", "avatar_url": "https://..." }`. Участники **без** аватарки тоже попадают в список (`avatar_url: null` — на клиенте можно показать круг с первой буквой `name`).
 
 **Структура комнаты:**
 ```json
 { "id": "uuid", "context": "work", "title": "Работа",
   "participantCount": 3, "observerCount": 2, "maxParticipants": 10, "isActive": true,
   "topParicipants": [
-    { "id": "u1", "avatar_url": "https://cdn.example.com/a1.png" },
-    { "id": "u2", "avatar_url": null }
+    { "id": "u1", "name": "Анна", "avatar_url": "https://cdn.example.com/a1.png" },
+    { "id": "u2", "name": "Борис", "avatar_url": null }
   ] }
 ```
 
@@ -1569,7 +1569,7 @@ POST /api/rooms/{id}/leave → выйти из комнаты → 204
 {
   "room": { "id": "uuid", "context": "work", "title": "Работа",
             "participantCount": 0, "observerCount": 1, "maxParticipants": 10, "isActive": true,
-            "topParicipants": [{ "id": "uuid", "avatar_url": null }] },
+            "topParicipants": [{ "id": "uuid", "name": "Иван", "avatar_url": null }] },
   "participants": [
     { "userId": "uuid", "name": "Иван", "avatarUrl": null, "role": "OBSERVER", "joinedAt": "2026-03-10T13:00:00+05:00" }
   ]
@@ -1746,6 +1746,7 @@ data class RoomResponse(val id: String, val context: String, val title: String,
     @SerializedName("topParicipants") val topParicipants: List<TopParticipantPreview> = emptyList())
 data class TopParticipantPreview(
     val id: String,
+    val name: String,
     @SerializedName("avatar_url") val avatarUrl: String?
 )
 data class ParticipantResponse(val userId: String, val name: String, val avatarUrl: String?, val role: String?, val joinedAt: String?)
