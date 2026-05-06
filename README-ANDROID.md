@@ -1541,11 +1541,17 @@ DELETE /api/users/{userId}/points/{pointId}  → 204
 > **`isActive`** = есть ли свободные **слоты членства** в комнате (по числу записей в `room_participants`, не по столу).
 
 **Счётчики:** `participantCount` — сколько **сидят за столом**; `observerCount` — сколько **в лаунже** (вошли через `/join`, но не заняли место). Сумма совпадает с числом людей в комнате.
+  
+**Топ участников:** `topParicipants` (именно так в JSON) — массив до 5 элементов формата `{ "id": "uuid", "avatar_url": "https://..." }`.
 
 **Структура комнаты:**
 ```json
 { "id": "uuid", "context": "work", "title": "Работа",
-  "participantCount": 3, "observerCount": 2, "maxParticipants": 10, "isActive": true }
+  "participantCount": 3, "observerCount": 2, "maxParticipants": 10, "isActive": true,
+  "topParicipants": [
+    { "id": "u1", "avatar_url": "https://cdn.example.com/a1.png" },
+    { "id": "u2", "avatar_url": null }
+  ] }
 ```
 
 ### Эндпоинты
@@ -1562,7 +1568,8 @@ POST /api/rooms/{id}/leave → выйти из комнаты → 204
 ```json
 {
   "room": { "id": "uuid", "context": "work", "title": "Работа",
-            "participantCount": 0, "observerCount": 1, "maxParticipants": 10, "isActive": true },
+            "participantCount": 0, "observerCount": 1, "maxParticipants": 10, "isActive": true,
+            "topParicipants": [{ "id": "uuid", "avatar_url": null }] },
   "participants": [
     { "userId": "uuid", "name": "Иван", "avatarUrl": null, "role": "OBSERVER", "joinedAt": "2026-03-10T13:00:00+05:00" }
   ]
@@ -1735,7 +1742,12 @@ interface SyncRoomApi {
 data class JoinRoomResponse(val room: RoomResponse, val participants: List<ParticipantResponse>)
 data class RoomResponse(val id: String, val context: String, val title: String,
     val participantCount: Int, val observerCount: Int, val maxParticipants: Int,
-    @SerializedName("isActive") val isActive: Boolean)
+    @SerializedName("isActive") val isActive: Boolean,
+    @SerializedName("topParicipants") val topParicipants: List<TopParticipantPreview> = emptyList())
+data class TopParticipantPreview(
+    val id: String,
+    @SerializedName("avatar_url") val avatarUrl: String?
+)
 data class ParticipantResponse(val userId: String, val name: String, val avatarUrl: String?, val role: String?, val joinedAt: String?)
 ```
 

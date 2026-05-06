@@ -170,7 +170,8 @@ class RoomControllerTest {
                                 .andExpect(jsonPath("$[0].participantCount").value(0))
                                 .andExpect(jsonPath("$[0].observerCount").value(0))
                                 .andExpect(jsonPath("$[0].maxParticipants").value(10))
-                                .andExpect(jsonPath("$[0].isActive").value(true));
+                                .andExpect(jsonPath("$[0].isActive").value(true))
+                                .andExpect(jsonPath("$[0].topParicipants", hasSize(0)));
         }
 
         @Test
@@ -178,12 +179,16 @@ class RoomControllerTest {
         void testGetRooms_ParticipantAndObserverCounts() throws Exception {
                 Room room = createRoom("work", "Работа", 10, true);
                 addParticipant(room, testUser);
-                addParticipant(room, createUser("u2@example.com"));
+                User second = createUser("u2@example.com");
+                addParticipant(room, second);
 
                 mockMvc.perform(get("/api/rooms").header("Authorization", authHeader()))
                                 .andExpect(status().isOk())
                                 .andExpect(jsonPath("$[0].participantCount").value(0))
-                                .andExpect(jsonPath("$[0].observerCount").value(2));
+                                .andExpect(jsonPath("$[0].observerCount").value(2))
+                                .andExpect(jsonPath("$[0].topParicipants", hasSize(2)))
+                                .andExpect(jsonPath("$[0].topParicipants[*].id",
+                                                containsInAnyOrder(testUser.getId().toString(), second.getId().toString())));
         }
 
         @Test

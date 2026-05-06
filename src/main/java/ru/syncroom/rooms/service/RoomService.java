@@ -14,6 +14,7 @@ import ru.syncroom.rooms.dto.JoinRoomResponse;
 import ru.syncroom.rooms.dto.ParticipantResponse;
 import ru.syncroom.rooms.dto.RoomResponse;
 import ru.syncroom.rooms.dto.SeatDto;
+import ru.syncroom.rooms.dto.TopParticipantResponse;
 import ru.syncroom.rooms.repository.RoomParticipantRepository;
 import ru.syncroom.rooms.repository.RoomRepository;
 import ru.syncroom.rooms.repository.SeatRepository;
@@ -31,6 +32,7 @@ import java.util.UUID;
 @Service
 @RequiredArgsConstructor
 public class RoomService {
+    private static final int TOP_PARTICIPANTS_LIMIT = 5;
 
     private final RoomRepository roomRepository;
     private final RoomParticipantRepository participantRepository;
@@ -74,7 +76,8 @@ public class RoomService {
             int seated = seatRepository.countOccupiedByRoomId(room.getId());
             List<SeatDto> seats = seatRepository.findByRoomId(room.getId())
                     .stream().map(SeatDto::from).toList();
-            return RoomResponse.from(room, seated, totalMembers - seated, seats);
+            List<TopParticipantResponse> topParticipants = getTopParticipants(room.getId(), TOP_PARTICIPANTS_LIMIT);
+            return RoomResponse.from(room, seated, totalMembers - seated, seats, topParticipants);
         }).toList();
     }
 
@@ -151,9 +154,10 @@ public class RoomService {
 
         List<SeatDto> seats = seatRepository.findByRoomId(actualRoomId)
                 .stream().map(SeatDto::from).toList();
+        List<TopParticipantResponse> topParticipants = getTopParticipants(actualRoomId, TOP_PARTICIPANTS_LIMIT);
 
         return JoinRoomResponse.builder()
-                .room(RoomResponse.from(actualRoom, seatedCount, totalMembers - seatedCount, seats))
+                .room(RoomResponse.from(actualRoom, seatedCount, totalMembers - seatedCount, seats, topParticipants))
                 .participants(participantDtos)
                 .build();
     }
@@ -233,7 +237,18 @@ public class RoomService {
             int seated = seatRepository.countOccupiedByRoomId(room.getId());
             List<SeatDto> seats = seatRepository.findByRoomId(room.getId())
                     .stream().map(SeatDto::from).toList();
-            return RoomResponse.from(room, seated, totalMembers - seated, seats);
+            List<TopParticipantResponse> topParticipants = getTopParticipants(room.getId(), TOP_PARTICIPANTS_LIMIT);
+            return RoomResponse.from(room, seated, totalMembers - seated, seats, topParticipants);
         }).toList();
+    }
+
+    private List<TopParticipantResponse> getTopParticipants(UUID roomId, int limit) {
+        return participantRepository.findByRoomId(roomId).stream()
+                .filter(p -> p.getUser() != null)
+                .sorted((a, b) -> a.getJoinedAt().compareTo(b.getJoinedAt()))
+                .limit(limit)
+                .map(RoomParticipant::getUser)
+                .map(TopParticipantResponse::from)
+                .toList();
     }
 }

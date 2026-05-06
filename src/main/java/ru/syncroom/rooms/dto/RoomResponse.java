@@ -20,12 +20,21 @@ public class RoomResponse {
     private int maxParticipants;
     private String backgroundPicture;
     private List<SeatDto> seats;
+    // Keep JSON key spelling requested by frontend contract.
+    @JsonProperty("topParicipants")
+    private List<TopParticipantResponse> topParticipants;
 
     // Use @JsonProperty to ensure Jackson serialises the field as "isActive" (not "active")
     @JsonProperty("isActive")
     private boolean isActive;
 
-    public static RoomResponse from(Room room, int participantCount, int observerCount, List<SeatDto> seats) {
+    public static RoomResponse from(
+            Room room,
+            int participantCount,
+            int observerCount,
+            List<SeatDto> seats,
+            List<TopParticipantResponse> topParticipants
+    ) {
         return RoomResponse.builder()
                 .id(room.getId().toString())
                 .context(room.getContext())
@@ -35,13 +44,18 @@ public class RoomResponse {
                 .maxParticipants(room.getMaxParticipants())
                 .backgroundPicture(room.getBackgroundPicture())
                 .seats(seats)
+                .topParticipants(topParticipants)
                 .isActive(room.getIsActive())
                 .build();
     }
 
+    public static RoomResponse from(Room room, int participantCount, int observerCount, List<SeatDto> seats) {
+        return from(room, participantCount, observerCount, seats, List.of());
+    }
+
     /** Overload without seats */
     public static RoomResponse from(Room room, int participantCount, int observerCount) {
-        return from(room, participantCount, observerCount, List.of());
+        return from(room, participantCount, observerCount, List.of(), List.of());
     }
 }
 

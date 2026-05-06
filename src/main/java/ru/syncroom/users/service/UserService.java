@@ -78,12 +78,10 @@ public class UserService {
             }
         }
         
-        // Обновляем поля профиля. Аватар обновляется через отдельный upload endpoint.
+        // Обновляем поля профиля (включая avatarUrl для обратной совместимости с фронтендом).
         user.setName(request.getName());
         user.setEmail(request.getEmail());
-        if (request.getAvatarUrl() != null && !request.getAvatarUrl().isBlank()) {
-            user.setAvatarUrl(request.getAvatarUrl());
-        }
+        user.setAvatarUrl(request.getAvatarUrl());
         
         user = userRepository.save(user);
         
