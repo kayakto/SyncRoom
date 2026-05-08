@@ -23,6 +23,7 @@ import ru.syncroom.rooms.repository.RoomRepository;
 import ru.syncroom.rooms.service.RoomChatService;
 import ru.syncroom.study.domain.PomodoroSession;
 import ru.syncroom.study.domain.RoomBot;
+import ru.syncroom.study.dto.PomodoroManagerConfigRequest;
 import ru.syncroom.study.repository.PomodoroSessionRepository;
 import ru.syncroom.study.repository.RoomBotRepository;
 import ru.syncroom.users.domain.AuthProvider;
@@ -57,6 +58,12 @@ class PomodoroManagerBotRestartIntegrationTest {
             {"autoRestart":true,"restartDelay":1,"autoStart":false,
             "sendReminders":false,"sendMotivation":false,
             "workDuration":120,"breakDuration":30,"longBreakDuration":40,"roundsTotal":2}
+            """;
+
+    private static final String MANAGER_CONFIG_SHORT_DELAY_TINY = """
+            {"autoRestart":true,"restartDelay":1,"autoStart":false,
+            "sendReminders":false,"sendMotivation":false,
+            "workDuration":30,"breakDuration":10,"longBreakDuration":15,"roundsTotal":1}
             """;
 
     private static final String MANAGER_CONFIG_NO_RESTART = """
@@ -188,6 +195,37 @@ class PomodoroManagerBotRestartIntegrationTest {
         assertTrue(s.getNextRestartAt().isAfter(OffsetDateTime.now()));
         assertTrue(s.getNextRestartAt().isBefore(OffsetDateTime.now().plusHours(2)));
         verify(roomChatService).sendSystemBotMessage(eq(room.getId()), eq(pomodoroBot.getId()), any());
+    }
+
+    @Test
+    @Order(15)
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    @DisplayName("activate менеджера при уже существующей FINISHED-сессии планирует рестарт и стартует новую WORK")
+    void activateOnStuckFinished_schedulesAndRestarts() throws InterruptedException {
+        pomodoroSessionRepository.save(finishedSessionWithoutRestart());
+
+        PomodoroManagerConfigRequest req = new PomodoroManagerConfigRequest();
+        req.setAutoStart(false);
+        req.setAutoRestart(true);
+        req.setRestartDelay(1);
+        req.setRoundsTotal(1);
+        req.setWorkDuration(30);
+        req.setBreakDuration(10);
+        req.setLongBreakDuration(15);
+        req.setSendReminders(false);
+        req.setSendMotivation(false);
+
+        pomodoroManagerBotService.activate(room.getId(), user.getId(), req);
+
+        Thread.sleep(3500);
+
+        PomodoroSession s = pomodoroSessionRepository.findByRoomId(room.getId()).orElseThrow();
+        assertEquals("WORK", s.getPhase());
+        assertEquals(30, s.getWorkDuration());
+        assertEquals(10, s.getBreakDuration());
+        assertEquals(15, s.getLongBreakDuration());
+        assertEquals(1, s.getRoundsTotal());
+        assertNull(s.getNextRestartAt());
     }
 
     @Test

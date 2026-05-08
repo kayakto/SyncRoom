@@ -70,7 +70,9 @@ public class PomodoroManagerBotService {
                 .config(writeConfig(mergeWithDefaults(request)))
                 .build();
         RoomBot saved = roomBotRepository.save(bot);
-        scheduleAutostartIfNeeded(roomId, readConfig(saved.getConfig()));
+        Map<String, Object> cfg = readConfig(saved.getConfig());
+        scheduleAutostartIfNeeded(roomId, cfg);
+        ensureRestartScheduledIfFinished(roomId, cfg);
         return toResponse(saved);
     }
 
@@ -85,7 +87,9 @@ public class PomodoroManagerBotService {
         }
         bot.setConfig(writeConfig(mergeWithDefaults(request)));
         RoomBot saved = roomBotRepository.save(bot);
-        scheduleAutostartIfNeeded(roomId, readConfig(saved.getConfig()));
+        Map<String, Object> cfg = readConfig(saved.getConfig());
+        scheduleAutostartIfNeeded(roomId, cfg);
+        ensureRestartScheduledIfFinished(roomId, cfg);
         return toResponse(saved);
     }
 
@@ -121,7 +125,29 @@ public class PomodoroManagerBotService {
                 .isActive(true)
                 .config(writeConfig(defaultConfig()))
                 .build());
-        scheduleAutostartIfNeeded(roomId, readConfig(saved.getConfig()));
+        Map<String, Object> cfg = readConfig(saved.getConfig());
+        scheduleAutostartIfNeeded(roomId, cfg);
+        ensureRestartScheduledIfFinished(roomId, cfg);
+    }
+
+    /**
+     * Критично для recovery-сценария: если в комнате уже лежит FINISHED-сессия без next_restart_at,
+     * то событие FINISHED больше не придёт, а значит scheduleRestartIfNeeded не вызовется.
+     * Тогда планируем рестарт прямо при активации/обновлении конфигурации менеджера.
+     */
+    private void ensureRestartScheduledIfFinished(UUID roomId, Map<String, Object> cfg) {
+        pomodoroSessionRepository.findByRoomId(roomId).ifPresent(session -> {
+            if (!"FINISHED".equals(session.getPhase())) {
+                return;
+            }
+            if (session.getNextRestartAt() != null) {
+                return;
+            }
+            if (!readBool(cfg.get("autoRestart"), true)) {
+                return;
+            }
+            scheduleRestartIfNeeded(roomId, cfg);
+        });
     }
 
     @EventListener(ApplicationReadyEvent.class)
