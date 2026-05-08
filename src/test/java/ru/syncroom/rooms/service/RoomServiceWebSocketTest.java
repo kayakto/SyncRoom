@@ -14,6 +14,7 @@ import ru.syncroom.rooms.domain.ParticipantRole;
 import ru.syncroom.rooms.domain.Room;
 import ru.syncroom.rooms.domain.RoomParticipant;
 import ru.syncroom.rooms.dto.JoinRoomResponse;
+import ru.syncroom.rooms.dto.ParticipantResponse;
 import ru.syncroom.rooms.repository.RoomParticipantRepository;
 import ru.syncroom.rooms.repository.RoomRepository;
 import ru.syncroom.rooms.ws.RoomEvent;
@@ -170,10 +171,14 @@ class RoomServiceWebSocketTest {
     void testJoinRoom_ResponseParticipantsContainUser() {
         JoinRoomResponse response = roomService.joinRoom(testRoom.getId(), testUser.getId());
 
-        assertEquals(1, response.getParticipants().size());
-        assertEquals(testUser.getId().toString(), response.getParticipants().get(0).getUserId());
-        assertEquals(testUser.getName(), response.getParticipants().get(0).getName());
-        assertEquals(ParticipantRole.OBSERVER, response.getParticipants().get(0).getRole());
+        assertTrue(response.getParticipants().size() >= 1);
+        ParticipantResponse human = response.getParticipants().stream()
+                .filter(p -> Boolean.FALSE.equals(p.getIsBot()) || p.getIsBot() == null)
+                .filter(p -> testUser.getId().toString().equals(p.getUserId()))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(testUser.getName(), human.getName());
+        assertEquals(ParticipantRole.OBSERVER, human.getRole());
     }
 
     @Test
@@ -185,11 +190,11 @@ class RoomServiceWebSocketTest {
     }
 
     @Test
-    @DisplayName("joinRoom: participantCount = за столом (0), observerCount = 1 после входа без места")
+    @DisplayName("joinRoom: participantCount = за столом (дефолтные боты), observerCount = люди без места")
     void testJoinRoom_ResponseSeatVsObserverCounts() {
         JoinRoomResponse response = roomService.joinRoom(testRoom.getId(), testUser.getId());
 
-        assertEquals(0, response.getRoom().getParticipantCount());
+        assertEquals(1, response.getRoom().getParticipantCount());
         assertEquals(1, response.getRoom().getObserverCount());
     }
 

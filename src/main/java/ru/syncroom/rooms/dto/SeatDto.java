@@ -1,7 +1,9 @@
 package ru.syncroom.rooms.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Builder;
 import lombok.Data;
+import ru.syncroom.common.web.PublicAbsoluteUrlResolver;
 import ru.syncroom.rooms.domain.RoomSeatBot;
 import ru.syncroom.rooms.domain.Seat;
 import ru.syncroom.users.domain.User;
@@ -30,33 +32,34 @@ public class SeatDto {
         private String id;
         private String name;
         private String avatarUrl;
+        @JsonProperty("isBot")
         private Boolean isBot;
 
-        public static OccupantDto fromUser(User user) {
+        public static OccupantDto fromUser(User user, PublicAbsoluteUrlResolver urls) {
             return OccupantDto.builder()
                     .id(user.getId().toString())
                     .name(user.getName())
-                    .avatarUrl(user.getAvatarUrl())
+                    .avatarUrl(urls.resolve(user.getAvatarUrl()))
                     .isBot(false)
                     .build();
         }
 
-        public static OccupantDto fromSeatBot(RoomSeatBot bot) {
+        public static OccupantDto fromSeatBot(RoomSeatBot bot, PublicAbsoluteUrlResolver urls) {
             return OccupantDto.builder()
                     .id(bot.getId().toString())
                     .name(bot.getName())
-                    .avatarUrl(bot.getAvatarUrl())
+                    .avatarUrl(urls.resolve(bot.getAvatarUrl()))
                     .isBot(true)
                     .build();
         }
     }
 
-    public static SeatDto from(Seat seat) {
+    public static SeatDto from(Seat seat, PublicAbsoluteUrlResolver urls) {
         OccupantDto occupant = null;
         if (seat.getOccupiedBy() != null) {
-            occupant = OccupantDto.fromUser(seat.getOccupiedBy());
+            occupant = OccupantDto.fromUser(seat.getOccupiedBy(), urls);
         } else if (seat.getSeatBot() != null) {
-            occupant = OccupantDto.fromSeatBot(seat.getSeatBot());
+            occupant = OccupantDto.fromSeatBot(seat.getSeatBot(), urls);
         }
         return SeatDto.builder()
                 .id(seat.getId().toString())

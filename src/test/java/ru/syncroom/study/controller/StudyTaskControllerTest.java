@@ -437,6 +437,51 @@ class StudyTaskControllerTest {
     }
 
     @Test
+    @DisplayName("GET /leaderboard — автор задачи остаётся после выхода из комнаты (как /tasks/all)")
+    void leaderboard_includesFormerParticipantWithTasks() throws Exception {
+        Room room = createRoom();
+        User stayed = userRepository.save(User.builder()
+                .name("Stayed")
+                .email("stayed@example.com")
+                .provider(AuthProvider.EMAIL)
+                .passwordHash("hashed")
+                .createdAt(OffsetDateTime.now())
+                .build());
+        User left = userRepository.save(User.builder()
+                .name("LeftUser")
+                .email("left@example.com")
+                .provider(AuthProvider.EMAIL)
+                .passwordHash("hashed")
+                .createdAt(OffsetDateTime.now())
+                .build());
+        addParticipant(room, stayed);
+        addParticipant(room, left);
+        taskRepository.save(StudyTask.builder()
+                .user(left)
+                .room(room)
+                .text("napisat otchet")
+                .isDone(true)
+                .sortOrder(0)
+                .build());
+
+        participantRepository.deleteByRoomIdAndUserId(room.getId(), left.getId());
+
+        String stayedToken = "Bearer " + jwtTokenService.generateAccessToken(
+                stayed.getId(), stayed.getName(), stayed.getEmail(), stayed.getProvider().getValue());
+
+        mockMvc.perform(get("/api/rooms/{roomId}/leaderboard", room.getId())
+                        .header("Authorization", stayedToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(2)))
+                .andExpect(jsonPath("$[0].userId").value(left.getId().toString()))
+                .andExpect(jsonPath("$[0].completedTasks").value(1))
+                .andExpect(jsonPath("$[0].totalTasks").value(1))
+                .andExpect(jsonPath("$[1].userId").value(stayed.getId().toString()))
+                .andExpect(jsonPath("$[1].completedTasks").value(0))
+                .andExpect(jsonPath("$[1].totalTasks").value(0));
+    }
+
+    @Test
     @DisplayName("GET /leaderboard — 400 в leisure-комнате")
     void leaderboard_NotAvailableForLeisureRoom() throws Exception {
         Room room = createRoom("leisure");

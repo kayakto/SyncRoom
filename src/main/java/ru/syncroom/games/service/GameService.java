@@ -3,6 +3,7 @@ package ru.syncroom.games.service;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.hibernate.LazyInitializationException;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -10,6 +11,7 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import ru.syncroom.common.exception.BadRequestException;
 import ru.syncroom.common.exception.NotFoundException;
+import ru.syncroom.common.web.PublicAbsoluteUrlResolver;
 import ru.syncroom.games.domain.*;
 import ru.syncroom.games.dto.GameActionMessage;
 import ru.syncroom.games.dto.BotInfoResponse;
@@ -59,7 +61,8 @@ public class GameService {
     private final GarticInferenceGateway garticInferenceGateway;
     private final GameTraceLogger gameTraceLogger;
     private final GarticDrawingAssetStorage garticDrawingAssetStorage;
-    private static final int MIN_READY_PLAYERS_TO_START = 3;
+    private final ObjectProvider<GameQueueService> gameQueueServiceProvider;
+    private final PublicAbsoluteUrlResolver publicAbsoluteUrlResolver;
     private static final int LOBBY_DISCONNECT_UNREADY_DELAY_SEC = 10;
     private static final int TOTAL_ROUNDS = 3;
     private static final int GARTIC_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
@@ -89,8 +92,8 @@ public class GameService {
         if (!roomParticipantRepository.existsByRoomIdAndUserId(roomId, creatorId)) {
             throw new BadRequestException("User is not a participant of this room");
         }
-        if (gameSessionRepository.findFirstByRoomIdAndStatusNotOrderByCreatedAtDesc(roomId, "FINISHED").isPresent()) {
-            throw new BadRequestException("Active game already exists in this room");
+        if (gameSessionRepository.findFirstByRoomIdAndGameTypeAndStatusNotOrderByCreatedAtDesc(roomId, gameType, "FINISHED").isPresent()) {
+            throw new BadRequestException("Active game of this type already exists in this room");
         }
 
         User creator = userRepository.findById(creatorId).orElseThrow(() -> new NotFoundException("User not found"));
@@ -110,13 +113,60 @@ public class GameService {
         return toResponse(session);
     }
 
-    @Transactional(readOnly = true)
-    public GameResponse getCurrent(UUID roomId) {
+    /**
+     * Creates a LOBBY session with a fixed roster (all humans marked ready for startGame).
+     */
+    @Transactional
+    public GameSession createLobbySessionWithRoster(UUID roomId, String gameType, List<UUID> humanUserIds, List<UUID> botUserIds) {
         var room = roomRepository.findById(roomId).orElseThrow(() -> new NotFoundException("Room not found"));
         assertGamesAllowed(room.getContext());
+        if (gameSessionRepository.findFirstByRoomIdAndGameTypeAndStatusNotOrderByCreatedAtDesc(roomId, gameType, "FINISHED").isPresent()) {
+            throw new BadRequestException("Active game of this type already exists in this room");
+        }
+        GameSession session = gameSessionRepository.save(GameSession.builder()
+                .room(room)
+                .gameType(gameType)
+                .status("LOBBY")
+                .build());
+        for (UUID uid : humanUserIds) {
+            User u = userRepository.findById(uid).orElseThrow(() -> new NotFoundException("User not found"));
+            gamePlayerRepository.save(GamePlayer.builder()
+                    .game(session)
+                    .user(u)
+                    .isReady(true)
+                    .score(0)
+                    .build());
+        }
+        for (UUID botId : botUserIds) {
+            BotUser b = botUserRepository.findById(botId).orElseThrow(() -> new NotFoundException("Bot not found"));
+            gamePlayerRepository.save(GamePlayer.builder()
+                    .game(session)
+                    .botUser(b)
+                    .isReady(true)
+                    .score(0)
+                    .build());
+        }
+        return session;
+    }
+
+    @Transactional(readOnly = true)
+    public GameResponse getCurrent(UUID roomId, String gameTypeFilter) {
+        var room = roomRepository.findById(roomId).orElseThrow(() -> new NotFoundException("Room not found"));
+        assertGamesAllowed(room.getContext());
+        if (gameTypeFilter != null && !gameTypeFilter.isBlank()) {
+            GameSession session = gameSessionRepository
+                    .findFirstByRoomIdAndGameTypeAndStatusNotOrderByCreatedAtDesc(roomId, gameTypeFilter, "FINISHED")
+                    .orElseThrow(() -> new NotFoundException("No active game"));
+            return toResponse(session);
+        }
         GameSession session = gameSessionRepository.findFirstByRoomIdAndStatusNotOrderByCreatedAtDesc(roomId, "FINISHED")
                 .orElseThrow(() -> new NotFoundException("No active game"));
         return toResponse(session);
+    }
+
+    @Transactional(readOnly = true)
+    public GameResponse getCurrent(UUID roomId) {
+        return getCurrent(roomId, null);
     }
 
     @Transactional(readOnly = true)
@@ -125,7 +175,7 @@ public class GameService {
                 .map(bot -> BotInfoResponse.builder()
                         .id(bot.getId().toString())
                         .name(bot.getName())
-                        .avatarUrl(bot.getAvatarUrl())
+                        .avatarUrl(publicAbsoluteUrlResolver.resolve(bot.getAvatarUrl()))
                         .botType(bot.getBotType())
                         .build())
                 .toList();
@@ -258,15 +308,14 @@ public class GameService {
      */
     @Transactional
     public void onParticipantLeftRoom(UUID roomId, UUID userId) {
-        gameSessionRepository.findFirstByRoomIdAndStatusNotOrderByCreatedAtDesc(roomId, "FINISHED")
-                .ifPresent(game -> {
-                    if ("LOBBY".equals(game.getStatus())) {
-                        removePlayerFromLobbyIfPresent(game.getId(), userId);
-                    } else if ("IN_PROGRESS".equals(game.getStatus())
-                            && gamePlayerRepository.existsByGameIdAndUserId(game.getId(), userId)) {
-                        abortGameInProgress(game.getId());
-                    }
-                });
+        for (GameSession game : gameSessionRepository.findAllByRoomIdAndStatusNot(roomId, "FINISHED")) {
+            if ("LOBBY".equals(game.getStatus())) {
+                removePlayerFromLobbyIfPresent(game.getId(), userId);
+            } else if ("IN_PROGRESS".equals(game.getStatus())
+                    && gamePlayerRepository.existsByGameIdAndUserId(game.getId(), userId)) {
+                abortGameInProgress(game.getId());
+            }
+        }
     }
 
     private void removePlayerFromLobby(GameSession game, UUID userId) {
@@ -300,6 +349,7 @@ public class GameService {
             return;
         }
         eventSender.sendToGame(gameId, "GAME_CANCELLED", Map.of("reason", "PLAYER_LEFT_ROOM"));
+        notifyGameQueueFinished(gameId);
         gameSessionRepository.delete(game);
     }
 
@@ -311,8 +361,8 @@ public class GameService {
         List<GamePlayer> readyPlayers = players.stream()
                 .filter(p -> Boolean.TRUE.equals(p.getIsReady()))
                 .toList();
-        if (readyPlayers.size() < MIN_READY_PLAYERS_TO_START) {
-            throw new BadRequestException("Need at least " + MIN_READY_PLAYERS_TO_START + " ready players");
+        if (readyPlayers.size() < minPlayersForGameType(game.getGameType())) {
+            throw new BadRequestException("Need at least " + minPlayersForGameType(game.getGameType()) + " ready players");
         }
 
         List<GamePlayer> unreadyPlayers = players.stream()
@@ -368,6 +418,7 @@ public class GameService {
         gameSessionRepository.save(game);
         eventSender.sendToGame(gameId, "GAME_STOPPED", Map.of("byUserId", requesterId.toString()));
         eventSender.sendToGame(gameId, "GAME_FINISHED", Map.of("scores", List.of()));
+        notifyGameQueueFinished(gameId);
         gameTraceLogger.trace(gameId, "GAME_STOPPED byUserId=" + requesterId);
     }
 
@@ -702,6 +753,7 @@ public class GameService {
             game.setFinishedAt(java.time.OffsetDateTime.now());
             gameSessionRepository.save(game);
             eventSender.sendToGame(gameId, "GAME_FINISHED", Map.of("scores", scores));
+            notifyGameQueueFinished(gameId);
             return;
         }
         gameTimerService.schedule("game:" + gameId + ":next:" + round, 5, () -> {
@@ -904,6 +956,7 @@ public class GameService {
                     game.setFinishedAt(java.time.OffsetDateTime.now());
                     gameSessionRepository.save(game);
                 });
+                notifyGameQueueFinished(gameId);
                 gameTraceLogger.trace(gameId, "GARTIC_GAME_FINISHED");
             } catch (Exception e) {
                 log.error("Failed to finalize Gartic game {}", gameId, e);
@@ -1437,7 +1490,7 @@ public class GameService {
         List<GamePlayerDto> players = gamePlayerRepository.findByGameId(session.getId()).stream().map(p -> GamePlayerDto.builder()
                 .id(participantId(p).toString())
                 .name(participantName(p))
-                .avatarUrl(participantAvatar(p))
+                .avatarUrl(publicAbsoluteUrlResolver.resolve(participantAvatar(p)))
                 .isBot(isBot(p))
                 .isReady(p.getIsReady())
                 .score(p.getScore())
@@ -1448,6 +1501,17 @@ public class GameService {
                 .status(session.getStatus())
                 .players(players)
                 .build();
+    }
+
+    private void notifyGameQueueFinished(UUID gameSessionId) {
+        gameQueueServiceProvider.ifAvailable(s -> s.onLinkedGameEnded(gameSessionId));
+    }
+
+    private int minPlayersForGameType(String gameType) {
+        if ("GARTIC_PHONE".equals(gameType)) {
+            return 4;
+        }
+        return 3;
     }
 
     private void assertGamesAllowed(String roomContext) {

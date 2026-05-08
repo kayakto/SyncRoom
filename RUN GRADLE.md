@@ -55,6 +55,29 @@ gradle bootRun
 
 Приложение запустится на порту 8080 (http://localhost:8080).
 
+## Запуск выборочных тестов
+
+Полный прогон: `gradle test` или `./gradlew test`.
+
+Только тесты очередей игр (лобби, join/leave, смена типа, абсолютные avatar URL):
+
+```bash
+gradle test --tests "ru.syncroom.games.controller.GameQueueControllerTest"
+```
+
+Один метод:
+
+```bash
+gradle test --tests "ru.syncroom.games.controller.GameQueueControllerTest.joinSecondQueueLeavesFirst"
+```
+
+Провижининг мест и дефолтных seat-ботов (`DefaultSeatBotsByContext`, `SeatService` / `SeatBotService`):
+
+```bash
+gradle test --tests "ru.syncroom.rooms.seatbot.DefaultSeatBotsByContextTest"
+gradle test --tests "ru.syncroom.rooms.service.RoomSeatProvisioningIntegrationTest"
+```
+
 ## Swagger UI (API Документация)
 
 После запуска приложения доступна интерактивная документация API через Swagger UI:

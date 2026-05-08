@@ -21,5 +21,6 @@ public class ChatMessageResponse {
     private String userName;
     private Boolean isBot;
     private String text;
+    private String avatarUrl;
     private OffsetDateTime createdAt;
 }

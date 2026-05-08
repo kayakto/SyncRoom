@@ -15,6 +15,13 @@ public interface SeatRepository extends JpaRepository<Seat, UUID> {
     /** All seats in a room (used for displaying the room state) */
     List<Seat> findByRoomId(UUID roomId);
 
+    long countByRoom_Id(UUID roomId);
+
+    List<Seat> findByRoom_IdOrderByXAscYAsc(UUID roomId);
+
+    @Query("SELECT DISTINCT s FROM Seat s LEFT JOIN FETCH s.seatBot LEFT JOIN FETCH s.occupiedBy WHERE s.room.id = :roomId")
+    List<Seat> findByRoomIdFetchOccupants(@Param("roomId") UUID roomId);
+
     /**
      * Find the seat a specific user is sitting on within a room.
      * Spring Data resolves: occupiedBy → User, id → User.id

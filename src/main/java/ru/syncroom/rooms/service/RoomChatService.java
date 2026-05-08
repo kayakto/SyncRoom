@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import ru.syncroom.common.exception.BadRequestException;
 import ru.syncroom.common.exception.NotFoundException;
+import ru.syncroom.common.web.PublicAbsoluteUrlResolver;
 import ru.syncroom.rooms.domain.RoomMessage;
 import ru.syncroom.rooms.dto.ChatMessageResponse;
 import ru.syncroom.rooms.dto.PagedChatMessagesResponse;
@@ -33,6 +34,7 @@ public class RoomChatService {
     private final RoomParticipantRepository roomParticipantRepository;
     private final RoomMessageRepository roomMessageRepository;
     private final UserRepository userRepository;
+    private final PublicAbsoluteUrlResolver publicAbsoluteUrlResolver;
     private final SimpMessagingTemplate messagingTemplate;
 
     @Transactional(readOnly = true)
@@ -111,6 +113,7 @@ public class RoomChatService {
                 .id(m.getId().toString())
                 .userId(m.getUser().getId().toString())
                 .userName(m.getUser().getName())
+                .avatarUrl(publicAbsoluteUrlResolver.resolve(m.getUser().getAvatarUrl()))
                 .isBot(isBot)
                 .text(m.getText())
                 .createdAt(m.getCreatedAt())

@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import ru.syncroom.common.exception.BadRequestException;
 import ru.syncroom.common.exception.NotFoundException;
+import ru.syncroom.common.web.PublicAbsoluteUrlResolver;
 import ru.syncroom.rooms.domain.ParticipantRole;
 import ru.syncroom.rooms.domain.Room;
 import ru.syncroom.rooms.domain.Seat;
@@ -47,6 +48,7 @@ public class SeatService {
     private final RoomSeatBotRepository roomSeatBotRepository;
     private final UserRepository userRepository;
     private final SimpMessagingTemplate messagingTemplate;
+    private final PublicAbsoluteUrlResolver publicAbsoluteUrlResolver;
 
     /** Optional Redis — not required. Falls back to no-op if Redis is not configured. */
     @Autowired(required = false)
@@ -66,7 +68,7 @@ public class SeatService {
                 .user(SeatTakenPayload.OccupantInfo.builder()
                         .id(user.getId().toString())
                         .name(user.getName())
-                        .avatarUrl(user.getAvatarUrl())
+                        .avatarUrl(publicAbsoluteUrlResolver.resolve(user.getAvatarUrl()))
                         .isBot(false)
                         .build())
                 .participantCount(participantCount)
@@ -139,7 +141,7 @@ public class SeatService {
 
         // If seat is already theirs → idempotent, just return
         if (seat.getOccupiedBy() != null && seat.getOccupiedBy().getId().equals(userId)) {
-            return SeatDto.from(seat);
+            return SeatDto.from(seat, publicAbsoluteUrlResolver);
         }
 
         // Auto-move: if the user was sitting somewhere else in this room, free that seat first (без WS до конца операции)
@@ -166,7 +168,7 @@ public class SeatService {
         publishSeatTaken(roomId, saved, user, seated, observers);
 
         log.debug("User {} sat on seat {} in room {}", userId, seatId, roomId);
-        return SeatDto.from(saved);
+        return SeatDto.from(saved, publicAbsoluteUrlResolver);
     }
 
     /**
@@ -196,7 +198,7 @@ public class SeatService {
         publishSeatLeft(roomId, seatId, userId, seated, observers);
 
         log.debug("User {} stood up from seat {} in room {}", userId, seatId, roomId);
-        return SeatDto.from(saved);
+        return SeatDto.from(saved, publicAbsoluteUrlResolver);
     }
 
     /**
@@ -218,6 +220,32 @@ public class SeatService {
                 log.debug("Released seat for user {} in room {} (roomLeave/disconnect)", userId, roomId);
             }
         });
+    }
+
+    private static final double[][] DEFAULT_SEAT_GRID = {
+            {0.10, 0.30}, {0.25, 0.30}, {0.40, 0.30}, {0.55, 0.30}, {0.70, 0.30},
+            {0.10, 0.65}, {0.25, 0.65}, {0.40, 0.65}, {0.55, 0.65}, {0.70, 0.65}
+    };
+
+    /**
+     * Creates the standard 10-seat layout for a room if it has no seats yet (idempotent).
+     */
+    @Transactional
+    public void ensureSeatGridForRoom(UUID roomId) {
+        if (seatRepository.countByRoom_Id(roomId) > 0) {
+            return;
+        }
+        Room room = roomRepository.findById(roomId)
+                .orElseThrow(() -> new NotFoundException("Room not found"));
+        for (double[] xy : DEFAULT_SEAT_GRID) {
+            seatRepository.save(Seat.builder()
+                    .room(room)
+                    .x(xy[0])
+                    .y(xy[1])
+                    .build());
+        }
+        seatRepository.flush();
+        log.debug("Provisioned default seat grid for room {}", roomId);
     }
 
     // ─── Custom exceptions (mapped by GlobalExceptionHandler) ───────────────

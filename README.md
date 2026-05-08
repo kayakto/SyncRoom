@@ -213,12 +213,14 @@ OLLAMA_VISION_MODEL=llava:7b
 |-------|-----|----------|
 | GET | `/api/rooms` | Все комнаты (включая `seats[]`) |
 | GET | `/api/rooms/my` | Комнаты текущего пользователя |
-| POST | `/api/rooms/{id}/join` | Войти → `{ room, participants[] }` |
+| POST | `/api/rooms/{id}/join` | Войти → `{ room, participants[] }` (см. ниже: сетка мест и дефолтные seat-боты) |
 | POST | `/api/rooms/{id}/leave` | Выйти → 204, авто-освобождает место |
 | GET | `/api/rooms/{roomId}/messages` | История чата комнаты (`?page=0&size=50`) |
 
 > **Правило:** 1 пользователь = 1 комната одновременно.  
 > При заполнении комнаты автоматически создаётся новая с теми же параметрами.
+
+**При успешном `POST .../join`** сервер идемпотентно гарантирует сетку из 10 мест (`ensureSeatGridForRoom`) и расставляет **дефолтных seat-ботов** по `room.context` и порядку мест **`ORDER BY x, y`** (см. раздел Seat-bots). Для уже существующих PostgreSQL-данных то же правило подхватывает миграция **V25** (`seed_default_seat_bots`).
 
 **Счётчики в `RoomResponse`:**
 
@@ -259,6 +261,8 @@ OLLAMA_VISION_MODEL=llava:7b
 ### Seat-bots — персонажи за столом (`work` / `study` / `sport`)
 
 Отдельно от **игровых** ботов лобби (`/api/games/.../bots`) и от **мотивационного** бота комнаты (`/api/rooms/.../bots/motivational-goals`). Seat-бот сидит на **конкретном seat**, попадает в `seats[].occupiedBy` с **`isBot: true`**, даёт **`PARTICIPANT_JOINED`** / **`PARTICIPANT_LEFT`** на `/topic/room/{roomId}` с **`isBot: true`**. В **`leisure`** посадка недоступна (`400`).
+
+**Авто-провижининг при `POST .../join`:** после входа пользователя вызывается `seedDefaultSeatBotsIfNeeded` — боты не дублируются по `botType` в комнате. По контексту: **study** — `STUDY_HELPER` на первом месте, `WORK_FOCUS_BUDDY` на втором; **work** — один `WORK_FOCUS_BUDDY` на первом; **sport** — один `SPORT_CHEERLEADER` на первом; **leisure** — ботов нет. Клиенту достаточно отрисовать `room.seats[]`; отдельно вызывать `POST .../bot` при открытии комнаты не требуется.
 
 | Метод | URL | Описание |
 |-------|-----|----------|
@@ -723,6 +727,9 @@ V18 — room_bot, bot_goal_template и seed MotivBot/шаблонов целей
 V20 — projector_queue_items (очередь проектора: WAITING/PLAYING/DONE)
 V21 — projector_queue_reports (жалобы на слот проектора, уникальность queueItem+reporter)
 V22 — push_subscriptions (web push подписки: endpoint + p256dh + auth)
+V23 — room_seat_bots (seat-боты: тип, место, лимиты)
+V24 — game_queues (очереди лобби по типу игры в комнате)
+V25 — seed_default_seat_bots (идемпотентная расстановка дефолтных seat-ботов в существующих комнатах)
 ```
 
 ---
@@ -736,22 +743,26 @@ gradle test
 | Файл | Что тестирует | Тестов |
 |------|--------------|--------|
 | `AuthControllerTest` | register, email login, OAuth, refresh | 16 |
-| `UserControllerTest` | GET/PUT /me | 9 |
+| `UserControllerTest` | GET/PUT /me | 10 |
 | `PointControllerTest` | CRUD точек | 24 |
-| `RoomControllerTest` | GET rooms/my, join, leave | 31 |
+| `RoomControllerTest` | GET rooms/my, join, leave | 35 |
 | `RoomServiceWebSocketTest` | WS-события PARTICIPANT_JOINED/LEFT, leave при обрыве WS | 16 |
 | `WebSocketRoomDisconnectListenerTest` | STOMP disconnect → leave комнаты, мультисессии | 3 |
-| `SeatControllerTest` | sit, stand-up, auto-move, 403, 409, 404 | 9 |
-| `ProjectorControllerTest` | REST + SRS callback для проектора | 8 |
+| `SeatControllerTest` | sit, stand-up, auto-move, 403, 409, 404 | 10 |
+| `SeatBotControllerTest` | REST seat-ботов, каталог, лимиты, 409 с человеком/ботом | 12 |
+| `DefaultSeatBotsByContextTest` | Маппинг контекстов → типы ботов (unit) | 8 |
+| `RoomSeatProvisioningIntegrationTest` | Сетка мест + `seedDefaultSeatBotsIfNeeded` (интеграция) | 6 |
+| `ProjectorControllerTest` | REST + SRS callback для проектора | 12 |
 | `PomodoroControllerTest` | REST для помодоро (только GET; study-only; дефолты; 405 на POST/PUT/DELETE) | 17 |
 | `PomodoroAdvancePhaseTest` | `advancePhaseIfExpired`, BREAK/LONG_BREAK, WS, выборка | 6 |
-| `StudyTaskControllerTest` | Таски, лайки, leaderboard, идемпотентность, не участник | 12 |
-| `RoomBotControllerTest` | Активация бота целей, автогенерация, break-триггер, негативные кейсы | 6 |
-| `GameControllerTest` | REST игры: create/current/ready/unready/leave/start, leaveRoom→игра | 7 |
-| `GameServiceWebSocketTest` | Quiplash + Gartic WS flow, валидации, `PLAYER_KICKED` и таймауты | 6 |
+| `StudyTaskControllerTest` | Таски, лайки, leaderboard, идемпотентность, не участник | 15 |
+| `RoomBotControllerTest` | Активация бота целей, автогенерация, break-триггер, негативные кейсы | 9 |
+| `GameControllerTest` | REST игры: create/current/ready/unready/leave/start, leaveRoom→игра | 12 |
+| `GameQueueControllerTest` | Очереди лобби: join/leave, смена типа, avatar URL | 10 |
+| `GameServiceWebSocketTest` | Quiplash + Gartic WS flow, валидации, `PLAYER_KICKED` и таймауты | 10 |
 | `RoomChatControllerTest` | История чата: пагинация, пустой список, два автора, доступ | 7 |
 | `RoomChatServiceTest` | Валидация, trim, пагинация, broadcast, граница 4000 символов | 9 |
-| **Итого** | | **173** |
+| **Итого** | | **247** |
 
 Тесты используют H2 in-memory БД, `@MockitoBean SimpMessagingTemplate` (Spring Boot 3.4+), Redis не требуется.
 

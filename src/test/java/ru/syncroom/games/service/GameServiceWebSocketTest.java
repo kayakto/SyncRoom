@@ -79,7 +79,7 @@ class GameServiceWebSocketTest {
     @MockitoBean
     private GameTimerService gameTimerService;
 
-    private User u1, u2, u3;
+    private User u1, u2, u3, u4;
     private Room room;
     private final Map<String, Runnable> scheduledTasks = new ConcurrentHashMap<>();
 
@@ -92,11 +92,13 @@ class GameServiceWebSocketTest {
         u1 = createUser("ws1@example.com");
         u2 = createUser("ws2@example.com");
         u3 = createUser("ws3@example.com");
+        u4 = createUser("ws4@example.com");
 
         room = roomRepository.save(Room.builder().context("leisure").title("g").maxParticipants(10).isActive(true).build());
         addParticipant(room, u1);
         addParticipant(room, u2);
         addParticipant(room, u3);
+        addParticipant(room, u4);
 
         // Для теста полного flow: таймер перехода к следующему раунду запускаем сразу
         doAnswer(inv -> {
@@ -132,8 +134,8 @@ class GameServiceWebSocketTest {
     @Test
     @DisplayName("startGame запускает с ready>=3 и отправляет PLAYER_KICKED неготовому")
     void startGame_KicksUnreadyPlayers() {
-        User u4 = createUser("ws4@example.com");
-        addParticipant(room, u4);
+        User u5 = createUser("ws5@example.com");
+        addParticipant(room, u5);
 
         GameResponse game = gameService.createGame(room.getId(), u1.getId(), "QUIPLASH");
         UUID gameId = UUID.fromString(game.getGameId());
@@ -142,12 +144,13 @@ class GameServiceWebSocketTest {
         gameService.markReady(gameId, u2.getId());
         gameService.markReady(gameId, u3.getId());
         gameService.markReady(gameId, u4.getId());
-        gameService.markUnready(gameId, u4.getId());
+        gameService.markReady(gameId, u5.getId());
+        gameService.markUnready(gameId, u5.getId());
 
         gameService.startGame(gameId);
 
-        assertEquals(3, gamePlayerRepository.countByGameId(gameId));
-        verify(gameEventSender).sendToPlayer(eq(gameId), eq(u4.getId()), eq("PLAYER_KICKED"), anyMap());
+        assertEquals(4, gamePlayerRepository.countByGameId(gameId));
+        verify(gameEventSender).sendToPlayer(eq(gameId), eq(u5.getId()), eq("PLAYER_KICKED"), anyMap());
         verify(gameEventSender, atLeastOnce()).sendToGame(eq(gameId), eq("GAME_STARTED"), anyMap());
     }
 
@@ -172,20 +175,29 @@ class GameServiceWebSocketTest {
         gameService.markReady(gameId, u1.getId());
         gameService.markReady(gameId, u2.getId());
         gameService.markReady(gameId, u3.getId());
+        gameService.markReady(gameId, u4.getId());
         gameService.startGame(gameId);
 
         // step 1 (TEXT)
         submitPhrase(gameId, u1.getId(), "p1");
         submitPhrase(gameId, u2.getId(), "p2");
         submitPhrase(gameId, u3.getId(), "p3");
+        submitPhrase(gameId, u4.getId(), "p4");
         // step 2 (DRAWING)
         submitDrawing(gameId, u1.getId(), MINI_PNG_DATA_URL);
         submitDrawing(gameId, u2.getId(), MINI_PNG_DATA_URL);
         submitDrawing(gameId, u3.getId(), MINI_PNG_DATA_URL);
+        submitDrawing(gameId, u4.getId(), MINI_PNG_DATA_URL);
         // step 3 (TEXT guess)
         submitGuess(gameId, u1.getId(), "g1");
         submitGuess(gameId, u2.getId(), "g2");
         submitGuess(gameId, u3.getId(), "g3");
+        submitGuess(gameId, u4.getId(), "g4");
+        // step 4 (DRAWING)
+        submitDrawing(gameId, u1.getId(), MINI_PNG_DATA_URL);
+        submitDrawing(gameId, u2.getId(), MINI_PNG_DATA_URL);
+        submitDrawing(gameId, u3.getId(), MINI_PNG_DATA_URL);
+        submitDrawing(gameId, u4.getId(), MINI_PNG_DATA_URL);
 
         verify(gameEventSender, atLeastOnce()).sendToGame(eq(gameId), eq("REVEAL_CHAIN"), ArgumentMatchers.any());
         verify(gameEventSender, atLeastOnce()).sendToGame(eq(gameId), eq("GAME_FINISHED"), ArgumentMatchers.any());
@@ -199,11 +211,13 @@ class GameServiceWebSocketTest {
         gameService.markReady(gameId, u1.getId());
         gameService.markReady(gameId, u2.getId());
         gameService.markReady(gameId, u3.getId());
+        gameService.markReady(gameId, u4.getId());
         gameService.startGame(gameId);
 
         submitPhrase(gameId, u1.getId(), "p1");
         submitPhrase(gameId, u2.getId(), "p2");
         submitPhrase(gameId, u3.getId(), "p3");
+        submitPhrase(gameId, u4.getId(), "p4");
 
         int maxBytes = 2 * 1024 * 1024;
         byte[] huge = new byte[maxBytes + 1];
@@ -221,11 +235,13 @@ class GameServiceWebSocketTest {
         gameService.markReady(gameId, u1.getId());
         gameService.markReady(gameId, u2.getId());
         gameService.markReady(gameId, u3.getId());
+        gameService.markReady(gameId, u4.getId());
         gameService.startGame(gameId);
 
         runScheduled(gameId, 1);
         runScheduled(gameId, 2);
         runScheduled(gameId, 3);
+        runScheduled(gameId, 4);
 
         verify(gameEventSender, atLeastOnce()).sendToGame(eq(gameId), eq("REVEAL_CHAIN"), ArgumentMatchers.any());
         verify(gameEventSender, atLeastOnce()).sendToGame(eq(gameId), eq("GAME_FINISHED"), ArgumentMatchers.any());
@@ -240,22 +256,25 @@ class GameServiceWebSocketTest {
         gameService.markReady(gameId, u1.getId());
         gameService.markReady(gameId, u2.getId());
         gameService.markReady(gameId, u3.getId());
+        gameService.markReady(gameId, u4.getId());
         gameService.startGame(gameId);
 
         submitPhrase(gameId, u1.getId(), "p1");
         submitPhrase(gameId, u2.getId(), "p2");
         submitPhrase(gameId, u3.getId(), "p3");
+        submitPhrase(gameId, u4.getId(), "p4");
 
         submitDrawing(gameId, u1.getId(), MINI_PNG_DATA_URL);
         submitDrawing(gameId, u2.getId(), MINI_PNG_DATA_URL);
         submitDrawing(gameId, u3.getId(), MINI_PNG_DATA_URL);
+        submitDrawing(gameId, u4.getId(), MINI_PNG_DATA_URL);
 
         ArgumentCaptor<UUID> gameIdCaptor = ArgumentCaptor.forClass(UUID.class);
         ArgumentCaptor<UUID> userIdCaptor = ArgumentCaptor.forClass(UUID.class);
         ArgumentCaptor<String> typeCaptor = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<Map<String, Object>> payloadCaptor = ArgumentCaptor.forClass((Class) Map.class);
 
-        verify(gameEventSender, atLeast(9))
+        verify(gameEventSender, atLeast(12))
                 .sendToPlayer(gameIdCaptor.capture(), userIdCaptor.capture(), typeCaptor.capture(), payloadCaptor.capture());
 
         boolean hasWriteForU1 = false;
@@ -291,12 +310,12 @@ class GameServiceWebSocketTest {
         GameResponse game = gameService.createGame(room.getId(), u1.getId(), "GARTIC_PHONE");
         UUID gameId = UUID.fromString(game.getGameId());
 
-        gameService.addBots(gameId, u1.getId(), "GARTIC_DRAWER", 2);
+        gameService.addBots(gameId, u1.getId(), "GARTIC_DRAWER", 3);
         gameService.markReady(gameId, u1.getId());
         gameService.startGame(gameId);
 
-        assertEquals(3, gamePlayerRepository.countByGameId(gameId));
-        assertEquals(2, gamePlayerRepository.findByGameId(gameId).stream().filter(gp -> gp.getBotUser() != null).count());
+        assertEquals(4, gamePlayerRepository.countByGameId(gameId));
+        assertEquals(3, gamePlayerRepository.findByGameId(gameId).stream().filter(gp -> gp.getBotUser() != null).count());
 
         runBotTasks(gameId, 1);
         submitPhrase(gameId, u1.getId(), "human phrase");
@@ -306,6 +325,9 @@ class GameServiceWebSocketTest {
 
         runBotTasks(gameId, 3);
         submitGuess(gameId, u1.getId(), "human guess");
+
+        runBotTasks(gameId, 4);
+        submitDrawing(gameId, u1.getId(), MINI_PNG_DATA_URL);
 
         verify(gameEventSender, atLeastOnce()).sendToGame(eq(gameId), eq("BOT_ADDED"), anyMap());
         verify(gameEventSender, atLeastOnce()).sendToGame(eq(gameId), eq("REVEAL_CHAIN"), anyMap());
@@ -320,6 +342,7 @@ class GameServiceWebSocketTest {
         gameService.markReady(gameId, u1.getId());
         gameService.markReady(gameId, u2.getId());
         gameService.markReady(gameId, u3.getId());
+        gameService.markReady(gameId, u4.getId());
         gameService.startGame(gameId);
 
         submitPhrase(gameId, u1.getId(), "cat phone");

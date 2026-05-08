@@ -78,8 +78,11 @@ public class GameController {
     })
     @GetMapping("/api/rooms/{roomId}/games/current")
     @SecurityRequirement(name = "Bearer Authentication")
-    public GameResponse getCurrent(@PathVariable UUID roomId) {
-        return gameService.getCurrent(roomId);
+    public GameResponse getCurrent(
+            @PathVariable UUID roomId,
+            @RequestParam(required = false) String gameType
+    ) {
+        return gameService.getCurrent(roomId, gameType);
     }
 
     @Operation(

@@ -64,9 +64,11 @@ class GameControllerTest {
     private User u1;
     private User u2;
     private User u3;
+    private User u4;
     private String t1;
     private String t2;
     private String t3;
+    private String t4;
     private Room room;
 
     @BeforeEach
@@ -78,12 +80,14 @@ class GameControllerTest {
         u1 = createUser("g1@example.com");
         u2 = createUser("g2@example.com");
         u3 = createUser("g3@example.com");
-        t1 = token(u1); t2 = token(u2); t3 = token(u3);
+        u4 = createUser("g4@example.com");
+        t1 = token(u1); t2 = token(u2); t3 = token(u3); t4 = token(u4);
 
         room = roomRepository.save(Room.builder().context("leisure").title("Game room").maxParticipants(10).isActive(true).build());
         addParticipant(room, u1);
         addParticipant(room, u2);
         addParticipant(room, u3);
+        addParticipant(room, u4);
     }
 
     @Test
@@ -148,6 +152,8 @@ class GameControllerTest {
                 .andExpect(status().isOk());
         mockMvc.perform(post("/api/games/{gameId}/ready", UUID.fromString(gameId)).header("Authorization", "Bearer " + t3))
                 .andExpect(status().isOk());
+        mockMvc.perform(post("/api/games/{gameId}/ready", UUID.fromString(gameId)).header("Authorization", "Bearer " + t4))
+                .andExpect(status().isOk());
 
         mockMvc.perform(post("/api/games/{gameId}/start", UUID.fromString(gameId))
                         .header("Authorization", "Bearer " + t1))
@@ -185,6 +191,7 @@ class GameControllerTest {
         mockMvc.perform(post("/api/games/{gameId}/ready", gid).header("Authorization", "Bearer " + t1)).andExpect(status().isOk());
         mockMvc.perform(post("/api/games/{gameId}/ready", gid).header("Authorization", "Bearer " + t2)).andExpect(status().isOk());
         mockMvc.perform(post("/api/games/{gameId}/ready", gid).header("Authorization", "Bearer " + t3)).andExpect(status().isOk());
+        mockMvc.perform(post("/api/games/{gameId}/ready", gid).header("Authorization", "Bearer " + t4)).andExpect(status().isOk());
         mockMvc.perform(post("/api/games/{gameId}/start", gid).header("Authorization", "Bearer " + t1)).andExpect(status().isOk());
 
         byte[] png = Base64.getDecoder().decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMBAAZ9l1cAAAAASUVORK5CYII=");
@@ -300,9 +307,9 @@ class GameControllerTest {
     @Test
     @DisplayName("POST /start — запускает игру с 3+ ready и исключает неготовых")
     void startGame_WithFourPlayers_KicksUnreadyAndStarts() throws Exception {
-        User u4 = createUser("g4@example.com");
-        String t4 = token(u4);
-        addParticipant(room, u4);
+        User u5 = createUser("g5@example.com");
+        String t5 = token(u5);
+        addParticipant(room, u5);
 
         String gameId = extractGameId(mockMvc.perform(post("/api/rooms/{roomId}/games", room.getId())
                         .header("Authorization", "Bearer " + t1)
@@ -315,9 +322,10 @@ class GameControllerTest {
         mockMvc.perform(post("/api/games/{gameId}/ready", gid).header("Authorization", "Bearer " + t1)).andExpect(status().isOk());
         mockMvc.perform(post("/api/games/{gameId}/ready", gid).header("Authorization", "Bearer " + t2)).andExpect(status().isOk());
         mockMvc.perform(post("/api/games/{gameId}/ready", gid).header("Authorization", "Bearer " + t3)).andExpect(status().isOk());
-        // u4 remains unready
         mockMvc.perform(post("/api/games/{gameId}/ready", gid).header("Authorization", "Bearer " + t4)).andExpect(status().isOk());
-        mockMvc.perform(post("/api/games/{gameId}/unready", gid).header("Authorization", "Bearer " + t4)).andExpect(status().isOk());
+        // u5 remains unready
+        mockMvc.perform(post("/api/games/{gameId}/ready", gid).header("Authorization", "Bearer " + t5)).andExpect(status().isOk());
+        mockMvc.perform(post("/api/games/{gameId}/unready", gid).header("Authorization", "Bearer " + t5)).andExpect(status().isOk());
 
         mockMvc.perform(post("/api/games/{gameId}/start", gid)
                         .header("Authorization", "Bearer " + t1))
@@ -326,8 +334,8 @@ class GameControllerTest {
         mockMvc.perform(get("/api/rooms/{roomId}/games/current", room.getId()).header("Authorization", "Bearer " + t1))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("IN_PROGRESS"))
-                .andExpect(jsonPath("$.players", hasSize(3)))
-                .andExpect(jsonPath("$.players[*].id", not(hasItem(u4.getId().toString()))));
+                .andExpect(jsonPath("$.players", hasSize(4)))
+                .andExpect(jsonPath("$.players[*].id", not(hasItem(u5.getId().toString()))));
     }
 
     @Test

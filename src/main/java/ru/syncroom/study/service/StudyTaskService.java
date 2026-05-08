@@ -11,6 +11,7 @@ import ru.syncroom.rooms.domain.RoomParticipant;
 import ru.syncroom.rooms.domain.RoomSeatBot;
 import ru.syncroom.rooms.repository.RoomParticipantRepository;
 import ru.syncroom.rooms.repository.RoomRepository;
+import ru.syncroom.rooms.repository.RoomSeatBotRepository;
 import ru.syncroom.study.domain.StudyTask;
 import ru.syncroom.study.domain.TaskLike;
 import ru.syncroom.study.dto.*;
@@ -37,6 +38,7 @@ public class StudyTaskService {
     private final RoomRepository roomRepository;
     private final UserRepository userRepository;
     private final RoomParticipantRepository participantRepository;
+    private final RoomSeatBotRepository roomSeatBotRepository;
     private final ApplicationEventPublisher eventPublisher;
     private final SimpMessagingTemplate messagingTemplate;
 
@@ -131,11 +133,29 @@ public class StudyTaskService {
         if (LEADERBOARD_FORBIDDEN_CONTEXT.equals(room.getContext())) {
             throw new BadRequestException("Leaderboard is not available in leisure rooms");
         }
-        List<RoomParticipant> participants = participantRepository.findByRoomId(roomId);
-        List<LeaderboardEntryResponse> rows = new ArrayList<>();
-        for (RoomParticipant p : participants) {
+        // Согласовано с GET /tasks/all: учитываем всех, кто оставил задачи или лайки в комнате,
+        // плюс текущих участников (в т.ч. без активности — нули в метриках).
+        Set<UUID> humanIds = new LinkedHashSet<>();
+        humanIds.addAll(taskRepository.findDistinctUserIdsWithTasksInRoom(roomId));
+        humanIds.addAll(likeRepository.findDistinctUserIdsWhoLikedInRoom(roomId));
+        for (RoomParticipant p : participantRepository.findByRoomId(roomId)) {
             if (p.getUser() != null) {
-                User u = p.getUser();
+                humanIds.add(p.getUser().getId());
+            }
+        }
+
+        Set<UUID> seatBotIds = new LinkedHashSet<>();
+        seatBotIds.addAll(taskRepository.findDistinctOwnerSeatBotIdsWithTasksInRoom(roomId));
+        seatBotIds.addAll(likeRepository.findDistinctLikerSeatBotIdsWhoLikedInRoom(roomId));
+        for (RoomParticipant p : participantRepository.findByRoomId(roomId)) {
+            if (p.getSeatBot() != null) {
+                seatBotIds.add(p.getSeatBot().getId());
+            }
+        }
+
+        List<LeaderboardEntryResponse> rows = new ArrayList<>();
+        for (UUID uid : humanIds) {
+            userRepository.findById(uid).ifPresent(u -> {
                 long totalLikes = likeRepository.countLikesOnTasksOwnedByUserInRoom(u.getId(), roomId);
                 long totalTasks = taskRepository.countByUser_IdAndRoom_Id(u.getId(), roomId);
                 long completedTasks = taskRepository.countByUser_IdAndRoom_IdAndIsDoneTrue(u.getId(), roomId);
@@ -147,8 +167,10 @@ public class StudyTaskService {
                         .completedTasks(completedTasks)
                         .totalTasks(totalTasks)
                         .build());
-            } else if (p.getSeatBot() != null) {
-                RoomSeatBot b = p.getSeatBot();
+            });
+        }
+        for (UUID botId : seatBotIds) {
+            roomSeatBotRepository.findById(botId).ifPresent(b -> {
                 long totalLikes = likeRepository.countLikesOnTasksOwnedBySeatBotInRoom(b.getId(), roomId);
                 long totalTasks = taskRepository.countByOwnerSeatBot_IdAndRoom_Id(b.getId(), roomId);
                 long completedTasks = taskRepository.countByOwnerSeatBot_IdAndRoom_IdAndIsDoneTrue(b.getId(), roomId);
@@ -160,7 +182,7 @@ public class StudyTaskService {
                         .completedTasks(completedTasks)
                         .totalTasks(totalTasks)
                         .build());
-            }
+            });
         }
         rows.sort(Comparator.comparingLong(LeaderboardEntryResponse::getTotalLikes).reversed()
                 .thenComparing(LeaderboardEntryResponse::getUserName, Comparator.nullsLast(String::compareToIgnoreCase)));

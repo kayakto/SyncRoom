@@ -1,5 +1,7 @@
 package ru.syncroom.rooms.controller;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -69,6 +71,9 @@ class RoomControllerTest {
         @Autowired
         private JwtTokenService jwtTokenService;
 
+        @Autowired
+        private ObjectMapper objectMapper;
+
         @MockitoBean
         private SimpMessagingTemplate messagingTemplate;
 
@@ -104,6 +109,18 @@ class RoomControllerTest {
 
         private String authHeader() {
                 return "Bearer " + accessToken;
+        }
+
+        private long countSeatBotsInJoinResponse(String json) throws Exception {
+                JsonNode seats = objectMapper.readTree(json).path("room").path("seats");
+                long n = 0;
+                for (JsonNode s : seats) {
+                        JsonNode ob = s.get("occupiedBy");
+                        if (ob != null && !ob.isNull() && ob.path("isBot").asBoolean(false)) {
+                                n++;
+                        }
+                }
+                return n;
         }
 
         private Room createRoom(String context, String title, int maxParticipants, boolean isActive) {
@@ -260,6 +277,41 @@ class RoomControllerTest {
         }
 
         @Test
+        @DisplayName("POST /join — STUDY: два дефолтных seat-бота на первых местах по (x,y)")
+        void testJoinRoom_StudySeedsDefaultSeatBots() throws Exception {
+                Room room = createRoom("study", "Школа", 10, true);
+                String body = mockMvc.perform(post("/api/rooms/{roomId}/join", room.getId()).header("Authorization", authHeader()))
+                                .andExpect(status().isOk())
+                                .andReturn().getResponse().getContentAsString();
+                assertEquals(2, roomSeatBotRepository.countByRoom_Id(room.getId()));
+                assertEquals(10, objectMapper.readTree(body).path("room").path("seats").size());
+                assertEquals(2, countSeatBotsInJoinResponse(body));
+        }
+
+        @Test
+        @DisplayName("POST /join — WORK: один WORK_FOCUS_BUDDY на первом месте")
+        void testJoinRoom_WorkSeedsOneSeatBot() throws Exception {
+                Room room = createRoom("work", "Работа", 10, true);
+                String body = mockMvc.perform(post("/api/rooms/{roomId}/join", room.getId()).header("Authorization", authHeader()))
+                                .andExpect(status().isOk())
+                                .andReturn().getResponse().getContentAsString();
+                assertEquals(1, roomSeatBotRepository.countByRoom_Id(room.getId()));
+                assertEquals(1, countSeatBotsInJoinResponse(body));
+        }
+
+        @Test
+        @DisplayName("POST /join — LEISURE: сетка мест без seat-ботов")
+        void testJoinRoom_LeisureNoDefaultSeatBots() throws Exception {
+                Room room = createRoom("leisure", "Дом", 10, true);
+                String body = mockMvc.perform(post("/api/rooms/{roomId}/join", room.getId()).header("Authorization", authHeader()))
+                                .andExpect(status().isOk())
+                                .andReturn().getResponse().getContentAsString();
+                assertEquals(10, objectMapper.readTree(body).path("room").path("seats").size());
+                assertEquals(0, countSeatBotsInJoinResponse(body));
+                assertEquals(0, roomSeatBotRepository.countByRoom_Id(room.getId()));
+        }
+
+        @Test
         @DisplayName("POST /api/rooms/{roomId}/join - комната НЕ заполняется → дубликат не создаётся")
         void testJoinRoom_NoDuplicateWhenNotFull() throws Exception {
                 Room room = createRoom("work", "Работа", 5, true);
@@ -287,7 +339,8 @@ class RoomControllerTest {
                 Room dup = allRooms.stream().filter(r -> !r.getId().equals(room.getId())).findFirst().orElseThrow();
                 assertEquals("sport", dup.getContext());
                 assertTrue(dup.getIsActive());
-                assertEquals(0, participantRepository.countByRoomId(dup.getId()));
+                assertEquals(1, participantRepository.countByRoomId(dup.getId()));
+                assertEquals(1, roomSeatBotRepository.countByRoom_Id(dup.getId()));
         }
 
         @Test
@@ -375,7 +428,8 @@ class RoomControllerTest {
                                 "Bearer " + token3)).andExpect(status().isOk());
 
                 assertFalse(roomRepository.findById(room.getId()).orElseThrow().getIsActive());
-                assertEquals(3, participantRepository.countByRoomId(room.getId()));
+                assertEquals(3, participantRepository.countHumanParticipantsByRoomId(room.getId()));
+                assertEquals(4, participantRepository.countByRoomId(room.getId()));
                 assertEquals(2, roomRepository.count()); // оригинал + дубликат
         }
 

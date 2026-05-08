@@ -38,7 +38,7 @@
   - Топик `/topic/room/{roomId}/seats` с событиями `SEAT_TAKEN` / `SEAT_LEFT` (в payload — актуальные `participantCount` / `observerCount`).
   - В `RoomResponse`: **`participantCount`** = за столом (занятые места), **`observerCount`** = в комнате без места; **`topParicipants`** — до 5 превью людей (`id`, `name`, `avatar_url`; без аватарки `avatar_url` = null); в `ParticipantResponse` поле **`role`**: `OBSERVER` | `PARTICIPANT`.
 
-- **Seat-боты** (персонажи **за столом**, не путать с игровыми ботами Gartic/Quiplash и не с мотивационным ботом `/bots/motivational-goals`):
+- **Дефолтные seat-боты при входе в комнату:** после успешного `POST /api/rooms/{roomId}/join` сервер сам создаёт сетку из 10 мест (если её ещё не было) и расставляет ботов по контексту комнаты — **STUDY:** `STUDY_HELPER` и `WORK_FOCUS_BUDDY` на первых двух местах по координатам `(x,y)`; **WORK:** один `WORK_FOCUS_BUDDY`; **SPORT:** один `SPORT_CHEERLEADER`; **leisure:** ботов нет. Клиенту не нужно вызывать `POST .../seats/.../bot` «на всякий случай» при открытии комнаты — достаточно отрисовать `room.seats[].occupiedBy` (у бота `isBot: true`). Повторный join не дублирует ботов (идемпотентно по `botType` в комнате).
   - Доступны только в комнатах с `context`: **`work`**, **`study`**, **`sport`**. В **`leisure`** посадка возвращает `400`.
   - `GET /api/rooms/seat-bots/catalog?context=WORK` (или `STUDY`, `SPORT`) — список типов с полями `botType`, `name`, `avatarUrl`, `description`, `supportedContexts`, `behaviour` (`reactsToPomodoro`, `createsGoals`, `likesGoals`).
   - `POST /api/rooms/{roomId}/seats/{seatId}/bot` — тело `{ "botType": "WORK_FOCUS_BUDDY" }` (другие ключи: `STUDY_HELPER`, `SPORT_CHEERLEADER`). Ответ — **`SeatDto`**: у занятого ботом места `occupiedBy.id` — id seat-бота, **`occupiedBy.isBot`: true**, `name` / `avatarUrl` как в каталоге.
@@ -48,7 +48,8 @@
   - WebSocket: при посадке/снятии — те же **`SEAT_TAKEN`** / **`SEAT_LEFT`**, что и для людей; в **`SEAT_TAKEN`** у объекта пользователя есть **`isBot: true`**. На `/topic/room/{roomId}` дополнительно **`PARTICIPANT_JOINED`** / **`PARTICIPANT_LEFT`** с **`isBot: true`** (у бота `userId` в payload — строковый id seat-бота).
   - Когда из комнаты выходит **последний живой** пользователь (`POST .../leave`), сервер **удаляет всех seat-ботов** (места освобождаются, события уходят на `/seats` и `/room`).
   - Лидерборд и таски (`/tasks/all`, лайки) поддерживают цели seat-бота (`isBot` у задачи, см. основной README).
-  - Аватар по умолчанию — URL на статике backend (часто `/icons/icon-192.png`); на проде можно заменить на CDN без смены контрактов.
+  - В ответах API поля **`avatarUrl`** у людей и ботов (места, очереди игр, чат, участники) приходят как **абсолютные** URL (`https://...`) либо `null`; сырой путь `/icons/...` в JSON не отдаётся.
+  - Аватар по умолчанию на стороне хранилища может быть путём к статике; клиент всегда получает уже собранный URL.
 
 Ниже подробно описаны **проектор**, **помодоро** и **учебные таски**.
 
@@ -980,6 +981,56 @@ interface SyncRoomApi {
 
 ## 9. Игры (Quiplash) — инструкция для Android
 
+### 9.0. Очереди лобби и параллельные типы игр (leisure)
+
+В одной **leisure**-комнате одновременно существуют **отдельные очереди** на каждый поддерживаемый тип игры (`QUIPLASH`, `GARTIC_PHONE`). Экран выбора игры (`GameLobbyScreen`, selection) строится по снимку очередей; в лобби конкретной игры — список игроков этой очереди с флагом готовности.
+
+**Правило:** один пользователь может состоять **не более чем в одной** очереди в данной комнате. `POST .../join` на другой тип **автоматически** снимает его с предыдущей очереди (событие `QUEUE_PLAYER_LEFT` по старому типу, затем `QUEUE_PLAYER_JOINED` по новому).
+
+**Конфиг лимитов (без хардкода min/max на клиенте):**
+
+```http
+GET /api/games/config
+```
+
+Ответ — объект по ключам `QUIPLASH` и `GARTIC_PHONE`, для каждого: `minPlayers`, `maxPlayers`, `estimatedDurationMin` (числа согласованы с сервером).
+
+**REST очередей** (все с `Authorization: Bearer`, только участник комнаты, только `leisure`):
+
+```text
+GET    /api/rooms/{roomId}/games/queues                    → Map: ключ = тип игры, значение = снимок очереди
+POST   /api/rooms/{roomId}/games/queues/{gameType}/join    → 200 + GameQueueDto
+POST   /api/rooms/{roomId}/games/queues/{gameType}/leave   → 204
+POST   /api/rooms/{roomId}/games/queues/{gameType}/ready   → body: { "ready": true|false } → 200 + GameQueueDto
+POST   /api/rooms/{roomId}/games/queues/{gameType}/start   → старт сессии (хост + все люди ready + min игроков) → { "gameSessionId" }
+POST   /api/rooms/{roomId}/games/queues/{gameType}/bots    → { "botId", "difficulty": "EASY"|"MEDIUM"|"HARD" }
+DELETE /api/rooms/{roomId}/games/queues/{gameType}/bots/{botId}
+```
+
+`gameType` в пути — `QUIPLASH` или `GARTIC_PHONE` (допускается нормализация регистра и дефисов).
+
+**Поля `GameQueueDto`:** `gameType`, `status` (`WAITING` | `STARTING` | `IN_PROGRESS` | `FINISHED`), `minPlayers`, `maxPlayers`, `players[]`, `bots[]`. У игрока: `userId`, `username`, **`avatarUrl`** (абсолютный `http(s)://...` или `null`), `isBot`, `isReady`. У бота в очереди: `botId`, `name`, `avatarUrl`, `difficulty`, `isBot: true`, `isReady: true`.
+
+**WebSocket:** подписка на **`/topic/room/{roomId}/games`** (тот же формат конверта, что у других модулей: `type`, `payload`, `timestamp`):
+
+| type | payload (основное) |
+|------|---------------------|
+| `QUEUE_PLAYER_JOINED` | `gameType`, `player` (как в DTO) |
+| `QUEUE_PLAYER_LEFT` | `gameType`, `userId` |
+| `QUEUE_PLAYER_READY_CHANGED` | `gameType`, `userId`, `isReady` |
+| `QUEUE_BOT_ADDED` | `gameType`, `bot` |
+| `QUEUE_BOT_REMOVED` | `gameType`, `botId` |
+| `QUEUE_STARTED` | `gameType`, `gameSessionId` — дальше клиент переходит на игровой поток `/topic/game/{gameId}` |
+| `QUEUE_FINISHED` | `gameType` — очередь снова в режиме ожидания / очищена по правилам сервера |
+
+**Выход из комнаты** `POST /api/rooms/{roomId}/leave` также снимает пользователя со **всех** очередей в статусе `WAITING` в этой комнате.
+
+**Параллельные сессии:** `GET /api/rooms/{roomId}/games/current` поддерживает опциональный query `gameType`; без него возвращается «текущая» игра по правилам сервера. Несколько типов игр могут идти в одной комнате независимо (не блокируют чат, помодоро и т.д.).
+
+**Аватарки в API:** в контексте чата, участников комнаты и очередей игр поле **`avatarUrl`** приходит как **абсолютный URL** либо `null`, а не «голый» путь вида `/icons/...` — клиенту не нужно вручную дописывать base URL.
+
+---
+
 ### 9.1. REST API игр
 
 Игры доступны только в комнатах с `context = "leisure"`. Для остальных контекстов игровые endpoint-ы возвращают `400`.
@@ -1409,13 +1460,13 @@ Authorization: Bearer <accessToken>
 ```json
 {
   "content": [
-    { "id": "uuid", "userId": "uuid", "userName": "Аня", "text": "Привет!", "createdAt": "2026-03-29T12:00:00+03:00" }
+    { "id": "uuid", "userId": "uuid", "userName": "Аня", "avatarUrl": "https://...", "text": "Привет!", "createdAt": "2026-03-29T12:00:00+03:00" }
   ],
   "totalPages": 1
 }
 ```
 
-Доступ только для участников комнаты (`POST .../join`). Порядок элементов в `content` на странице — **хронологический** (старые выше, новые ниже).
+Доступ только для участников комнаты (`POST .../join`). Порядок элементов в `content` на странице — **хронологический** (старые выше, новые ниже). Поле **`avatarUrl`** в сообщении — абсолютный URL или `null`.
 
 ### WebSocket (STOMP)
 
@@ -1433,6 +1484,7 @@ destination:/topic/room/{roomId}/chat
   "id": "uuid",
   "userId": "uuid",
   "userName": "Аня",
+  "avatarUrl": "https://...",
   "text": "Привет!",
   "createdAt": "2026-03-29T12:00:00+03:00"
 }
@@ -1455,6 +1507,7 @@ data class ChatMessageDto(
     val id: String,
     val userId: String,
     val userName: String,
+    val avatarUrl: String? = null,
     val text: String,
     val createdAt: String
 )

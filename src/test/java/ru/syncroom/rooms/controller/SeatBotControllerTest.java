@@ -179,7 +179,7 @@ class SeatBotControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].botType").value("WORK_FOCUS_BUDDY"))
                 .andExpect(jsonPath("$[0].behaviour.reactsToPomodoro").value(true))
-                .andExpect(jsonPath("$[0].avatarUrl").value("/icons/icon-192.png"));
+                .andExpect(jsonPath("$[0].avatarUrl").value(containsString("/icons/icon-192.png")));
     }
 
     @Test

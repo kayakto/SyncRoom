@@ -43,5 +43,11 @@ public interface StudyTaskRepository extends JpaRepository<StudyTask, UUID> {
 
     @Query("SELECT t FROM StudyTask t WHERE t.room.id = :roomId AND t.user IS NOT NULL AND t.isDone = false")
     List<StudyTask> findOpenHumanTasksInRoom(@Param("roomId") UUID roomId);
+
+    @Query("select distinct t.user.id from StudyTask t where t.room.id = :roomId and t.user is not null")
+    List<UUID> findDistinctUserIdsWithTasksInRoom(@Param("roomId") UUID roomId);
+
+    @Query("select distinct t.ownerSeatBot.id from StudyTask t where t.room.id = :roomId and t.ownerSeatBot is not null")
+    List<UUID> findDistinctOwnerSeatBotIdsWithTasksInRoom(@Param("roomId") UUID roomId);
 }
 

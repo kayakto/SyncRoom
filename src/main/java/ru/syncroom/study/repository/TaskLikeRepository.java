@@ -37,4 +37,10 @@ public interface TaskLikeRepository extends JpaRepository<TaskLike, UUID> {
     long countLikesOnTasksOwnedByUser(@Param("ownerId") UUID ownerId);
 
     boolean existsByTask_IdAndLikerSeatBot_Id(UUID taskId, UUID likerSeatBotId);
+
+    @Query("select distinct l.user.id from TaskLike l where l.task.room.id = :roomId and l.user is not null")
+    List<UUID> findDistinctUserIdsWhoLikedInRoom(@Param("roomId") UUID roomId);
+
+    @Query("select distinct l.likerSeatBot.id from TaskLike l where l.task.room.id = :roomId and l.likerSeatBot is not null")
+    List<UUID> findDistinctLikerSeatBotIdsWhoLikedInRoom(@Param("roomId") UUID roomId);
 }

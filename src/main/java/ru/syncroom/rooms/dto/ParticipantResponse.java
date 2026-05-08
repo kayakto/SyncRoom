@@ -2,6 +2,7 @@ package ru.syncroom.rooms.dto;
 
 import lombok.Builder;
 import lombok.Data;
+import ru.syncroom.common.web.PublicAbsoluteUrlResolver;
 import ru.syncroom.rooms.domain.ParticipantRole;
 import ru.syncroom.rooms.domain.RoomParticipant;
 import ru.syncroom.rooms.domain.RoomSeatBot;
@@ -25,13 +26,13 @@ public class ParticipantResponse {
     /** Seat-бот: true; человек: false или null (клиент трактует null как false). */
     private Boolean isBot;
 
-    public static ParticipantResponse from(RoomParticipant participant) {
+    public static ParticipantResponse from(RoomParticipant participant, PublicAbsoluteUrlResolver urls) {
         User user = participant.getUser();
         if (user != null) {
             return ParticipantResponse.builder()
                     .userId(user.getId().toString())
                     .name(user.getName())
-                    .avatarUrl(user.getAvatarUrl())
+                    .avatarUrl(urls.resolve(user.getAvatarUrl()))
                     .role(participant.getRole())
                     .joinedAt(participant.getJoinedAt())
                     .isBot(false)
@@ -42,7 +43,7 @@ public class ParticipantResponse {
             return ParticipantResponse.builder()
                     .userId(bot.getId().toString())
                     .name(bot.getName())
-                    .avatarUrl(bot.getAvatarUrl())
+                    .avatarUrl(urls.resolve(bot.getAvatarUrl()))
                     .role(participant.getRole())
                     .joinedAt(participant.getJoinedAt())
                     .isBot(true)

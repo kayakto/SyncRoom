@@ -7,9 +7,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import ru.syncroom.common.exception.BadRequestException;
 import ru.syncroom.common.exception.NotFoundException;
+import ru.syncroom.common.web.PublicAbsoluteUrlResolver;
 import ru.syncroom.rooms.domain.ParticipantRole;
 import ru.syncroom.rooms.domain.Room;
 import ru.syncroom.rooms.domain.RoomParticipant;
+import ru.syncroom.rooms.domain.Seat;
 import ru.syncroom.rooms.dto.JoinRoomResponse;
 import ru.syncroom.rooms.dto.ParticipantResponse;
 import ru.syncroom.rooms.dto.RoomResponse;
@@ -19,12 +21,14 @@ import ru.syncroom.rooms.repository.RoomParticipantRepository;
 import ru.syncroom.rooms.repository.RoomRepository;
 import ru.syncroom.rooms.repository.SeatRepository;
 import ru.syncroom.study.repository.StudyTaskRepository;
+import ru.syncroom.games.service.GameQueueService;
 import ru.syncroom.games.service.GameService;
 import ru.syncroom.rooms.ws.RoomEvent;
 import ru.syncroom.rooms.ws.RoomEventType;
 import ru.syncroom.users.domain.User;
 import ru.syncroom.users.repository.UserRepository;
 
+import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 
@@ -40,9 +44,11 @@ public class RoomService {
     private final SeatRepository seatRepository;
     private final SeatService seatService;
     private final GameService gameService;
+    private final GameQueueService gameQueueService;
     private final StudyTaskRepository studyTaskRepository;
     private final SeatBotService seatBotService;
     private final SimpMessagingTemplate messagingTemplate;
+    private final PublicAbsoluteUrlResolver publicAbsoluteUrlResolver;
 
     // ─── Helpers ────────────────────────────────────────────────────────────
 
@@ -52,6 +58,13 @@ public class RoomService {
         RoomEvent event = RoomEvent.of(type, payload);
         messagingTemplate.convertAndSend(ROOM_TOPIC + roomId, event);
         log.debug("WS event {} published to room {}", type, roomId);
+    }
+
+    private List<SeatDto> loadSeatDtosOrdered(UUID roomId) {
+        return seatRepository.findByRoomIdFetchOccupants(roomId).stream()
+                .sorted(Comparator.comparing(Seat::getX).thenComparing(Seat::getY))
+                .map(s -> SeatDto.from(s, publicAbsoluteUrlResolver))
+                .toList();
     }
 
     // ─── Public API ─────────────────────────────────────────────────────────
@@ -74,8 +87,7 @@ public class RoomService {
 
             int totalMembers = participantRepository.countByRoomId(room.getId());
             int seated = seatRepository.countOccupiedByRoomId(room.getId());
-            List<SeatDto> seats = seatRepository.findByRoomId(room.getId())
-                    .stream().map(SeatDto::from).toList();
+            List<SeatDto> seats = loadSeatDtosOrdered(room.getId());
             List<TopParticipantResponse> topParticipants = getTopParticipants(room.getId(), TOP_PARTICIPANTS_LIMIT);
             return RoomResponse.from(room, seated, totalMembers - seated, seats, topParticipants);
         }).toList();
@@ -103,6 +115,7 @@ public class RoomService {
 
         int currentCount = participantRepository.countHumanParticipantsByRoomId(roomId);
         UUID actualRoomId;
+        UUID spareRoomId = null;
 
         if (currentCount >= room.getMaxParticipants()) {
             room.setIsActive(false);
@@ -127,15 +140,23 @@ public class RoomService {
                 room.setIsActive(false);
                 roomRepository.save(room);
 
-                roomRepository.save(Room.builder()
+                Room spare = roomRepository.save(Room.builder()
                         .context(room.getContext())
                         .title(room.getTitle())
                         .maxParticipants(room.getMaxParticipants())
                         .backgroundPicture(room.getBackgroundPicture())
                         .isActive(true)
                         .build());
+                spareRoomId = spare.getId();
             }
             actualRoomId = room.getId();
+        }
+
+        seatService.ensureSeatGridForRoom(actualRoomId);
+        seatBotService.seedDefaultSeatBotsIfNeeded(actualRoomId, false);
+        if (spareRoomId != null) {
+            seatService.ensureSeatGridForRoom(spareRoomId);
+            seatBotService.seedDefaultSeatBotsIfNeeded(spareRoomId, false);
         }
 
         Room actualRoom = roomRepository.findById(actualRoomId).orElseThrow();
@@ -145,15 +166,14 @@ public class RoomService {
 
         RoomParticipant myParticipation = participantRepository
                 .findByRoomIdAndUserId(actualRoomId, userId).orElseThrow();
-        ParticipantResponse myDto = ParticipantResponse.from(myParticipation);
+        ParticipantResponse myDto = ParticipantResponse.from(myParticipation, publicAbsoluteUrlResolver);
 
         publish(actualRoomId, RoomEventType.PARTICIPANT_JOINED, myDto);
 
         List<ParticipantResponse> participantDtos = allParticipants.stream()
-                .map(ParticipantResponse::from).toList();
+                .map(p -> ParticipantResponse.from(p, publicAbsoluteUrlResolver)).toList();
 
-        List<SeatDto> seats = seatRepository.findByRoomId(actualRoomId)
-                .stream().map(SeatDto::from).toList();
+        List<SeatDto> seats = loadSeatDtosOrdered(actualRoomId);
         List<TopParticipantResponse> topParticipants = getTopParticipants(actualRoomId, TOP_PARTICIPANTS_LIMIT);
 
         return JoinRoomResponse.builder()
@@ -182,6 +202,7 @@ public class RoomService {
         // Auto-release seat before removing from room (sends SEAT_LEFT WS event)
         seatService.releaseUserSeat(roomId, userId);
 
+        gameQueueService.removeUserFromAllQueuesInRoom(roomId, userId);
         gameService.onParticipantLeftRoom(roomId, userId);
 
         // После выхода из комнаты пользователь не должен оставлять свои цели видимыми в комнате.
@@ -204,7 +225,7 @@ public class RoomService {
         ParticipantResponse leavingUser = ParticipantResponse.builder()
                 .userId(user.getId().toString())
                 .name(user.getName())
-                .avatarUrl(user.getAvatarUrl())
+                .avatarUrl(publicAbsoluteUrlResolver.resolve(user.getAvatarUrl()))
                 .isBot(false)
                 .build();
         publish(roomId, RoomEventType.PARTICIPANT_LEFT, leavingUser);
@@ -235,8 +256,7 @@ public class RoomService {
             Room room = p.getRoom();
             int totalMembers = participantRepository.countByRoomId(room.getId());
             int seated = seatRepository.countOccupiedByRoomId(room.getId());
-            List<SeatDto> seats = seatRepository.findByRoomId(room.getId())
-                    .stream().map(SeatDto::from).toList();
+            List<SeatDto> seats = loadSeatDtosOrdered(room.getId());
             List<TopParticipantResponse> topParticipants = getTopParticipants(room.getId(), TOP_PARTICIPANTS_LIMIT);
             return RoomResponse.from(room, seated, totalMembers - seated, seats, topParticipants);
         }).toList();
@@ -252,7 +272,7 @@ public class RoomService {
                 .sorted((a, b) -> a.getJoinedAt().compareTo(b.getJoinedAt()))
                 .limit(limit)
                 .map(RoomParticipant::getUser)
-                .map(TopParticipantResponse::from)
+                .map(u -> TopParticipantResponse.from(u, publicAbsoluteUrlResolver))
                 .toList();
     }
 }

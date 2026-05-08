@@ -3,6 +3,7 @@ package ru.syncroom.rooms.dto;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Builder;
 import lombok.Value;
+import ru.syncroom.common.web.PublicAbsoluteUrlResolver;
 import ru.syncroom.users.domain.User;
 
 @Value
@@ -15,11 +16,11 @@ public class TopParticipantResponse {
     @JsonProperty("avatar_url")
     String avatarUrl;
 
-    public static TopParticipantResponse from(User user) {
+    public static TopParticipantResponse from(User user, PublicAbsoluteUrlResolver urls) {
         return TopParticipantResponse.builder()
                 .id(user.getId().toString())
                 .name(user.getName())
-                .avatarUrl(user.getAvatarUrl())
+                .avatarUrl(urls.resolve(user.getAvatarUrl()))
                 .build();
     }
 }

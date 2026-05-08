@@ -11,6 +11,7 @@ import ru.syncroom.common.exception.BadRequestException;
 import ru.syncroom.common.exception.ForbiddenException;
 import ru.syncroom.common.exception.NotFoundException;
 import ru.syncroom.common.exception.UnauthorizedException;
+import ru.syncroom.common.web.PublicAbsoluteUrlResolver;
 import ru.syncroom.rooms.config.SeatBotProperties;
 import ru.syncroom.rooms.domain.ParticipantRole;
 import ru.syncroom.rooms.domain.Room;
@@ -26,6 +27,7 @@ import ru.syncroom.rooms.repository.RoomParticipantRepository;
 import ru.syncroom.rooms.repository.RoomRepository;
 import ru.syncroom.rooms.repository.RoomSeatBotRepository;
 import ru.syncroom.rooms.repository.SeatRepository;
+import ru.syncroom.rooms.seatbot.DefaultSeatBotsByContext;
 import ru.syncroom.rooms.seatbot.SeatBotKind;
 import ru.syncroom.rooms.ws.RoomEvent;
 import ru.syncroom.rooms.ws.RoomEventType;
@@ -50,6 +52,7 @@ public class SeatBotService {
     private final RoomSeatBotRepository roomSeatBotRepository;
     private final SeatBotProperties seatBotProperties;
     private final SimpMessagingTemplate messagingTemplate;
+    private final PublicAbsoluteUrlResolver publicAbsoluteUrlResolver;
 
     @Autowired(required = false)
     private StringRedisTemplate redisTemplate;
@@ -94,7 +97,7 @@ public class SeatBotService {
         return SeatBotCatalogEntryDto.builder()
                 .botType(k.getTypeKey())
                 .name(k.getDisplayName())
-                .avatarUrl(resolveBotAvatarUrl(k))
+                .avatarUrl(publicAbsoluteUrlResolver.resolve(resolveBotAvatarUrl(k)))
                 .description(k.getDescription())
                 .supportedContexts(k.getSupportedContextsUpper())
                 .behaviour(SeatBotCatalogEntryDto.BehaviourDto.builder()
@@ -113,10 +116,85 @@ public class SeatBotService {
                         .id(b.getId().toString())
                         .botType(b.getBotType())
                         .name(b.getName())
-                        .avatarUrl(b.getAvatarUrl())
+                        .avatarUrl(publicAbsoluteUrlResolver.resolve(b.getAvatarUrl()))
                         .seatId(b.getSeat().getId().toString())
                         .build())
                 .toList();
+    }
+
+    /**
+     * Places default seat bots for the room context on the first N seats (ordered by x, then y).
+     * Idempotent per bot type. Skips occupied seats without failing (info log). Does not require a human participant.
+     *
+     * @param publishWs if true, emits SEAT_TAKEN and PARTICIPANT_JOINED (used for interactive {@link #placeBot});
+     *                  false during room provisioning to avoid duplicate events before clients subscribe.
+     */
+    @Transactional
+    public void seedDefaultSeatBotsIfNeeded(UUID roomId, boolean publishWs) {
+        Room room = roomRepository.findById(roomId)
+                .orElseThrow(() -> new NotFoundException("Room not found"));
+        if ("leisure".equalsIgnoreCase(room.getContext())) {
+            return;
+        }
+        List<String> defaultTypes = DefaultSeatBotsByContext.forContext(room.getContext());
+        if (defaultTypes.isEmpty()) {
+            return;
+        }
+        List<Seat> seats = seatRepository.findByRoom_IdOrderByXAscYAsc(roomId);
+        for (int i = 0; i < defaultTypes.size() && i < seats.size(); i++) {
+            String typeKey = defaultTypes.get(i);
+            if (roomSeatBotRepository.existsByRoom_IdAndBotType(roomId, typeKey)) {
+                continue;
+            }
+            Seat seat = seatRepository.findById(seats.get(i).getId()).orElseThrow();
+            if (!isVacantForBot(seat)) {
+                log.info("Skip default seat bot {}: seat index {} not free in room {}", typeKey, i, roomId);
+                continue;
+            }
+            if (roomSeatBotRepository.countByRoom_Id(roomId) >= seatBotProperties.getMaxPerRoom()) {
+                log.info("Skip default seat bot seed: max bots reached for room {}", roomId);
+                return;
+            }
+            SeatBotKind kind = SeatBotKind.fromTypeKey(typeKey);
+            if (kind == null || !kind.supportsRoomContext(room.getContext())) {
+                log.warn("Skip default seat bot: invalid type {} for room {}", typeKey, roomId);
+                continue;
+            }
+            persistSeatBot(room, seat, kind, publishWs);
+        }
+    }
+
+    private boolean isVacantForBot(Seat seat) {
+        return seat.getOccupiedBy() == null && roomSeatBotRepository.findBySeat_Id(seat.getId()).isEmpty();
+    }
+
+    private void persistSeatBot(Room room, Seat seat, SeatBotKind kind, boolean publishWs) {
+        RoomSeatBot bot = RoomSeatBot.builder()
+                .room(room)
+                .botType(kind.getTypeKey())
+                .seat(seat)
+                .name(kind.getDisplayName())
+                .avatarUrl(resolveBotAvatarUrl(kind))
+                .build();
+        bot = roomSeatBotRepository.save(bot);
+        roomSeatBotRepository.flush();
+        seat.setSeatBot(bot);
+
+        participantRepository.save(RoomParticipant.builder()
+                .room(room)
+                .seatBot(bot)
+                .role(ParticipantRole.PARTICIPANT)
+                .build());
+        participantRepository.flush();
+
+        if (publishWs) {
+            int seated = seatedCount(room.getId());
+            int observers = observerCount(room.getId());
+            publishSeatTaken(room.getId(), seat, bot, seated, observers);
+            RoomParticipant rp = participantRepository.findBySeatBot_Id(bot.getId()).orElseThrow();
+            messagingTemplate.convertAndSend(ROOM_TOPIC + room.getId(), RoomEvent.of(RoomEventType.PARTICIPANT_JOINED, ParticipantResponse.from(rp, publicAbsoluteUrlResolver)));
+        }
+        invalidateCache(room.getId());
     }
 
     @Transactional
@@ -153,37 +231,15 @@ public class SeatBotService {
             throw new SeatService.SeatConflictException("Seat is already occupied by a bot");
         }
 
-        RoomSeatBot bot = RoomSeatBot.builder()
-                .room(room)
-                .botType(kind.getTypeKey())
-                .seat(seat)
-                .name(kind.getDisplayName())
-                .avatarUrl(resolveBotAvatarUrl(kind))
-                .build();
-        bot = roomSeatBotRepository.save(bot);
-        roomSeatBotRepository.flush();
-
-        participantRepository.save(RoomParticipant.builder()
-                .room(room)
-                .seatBot(bot)
-                .role(ParticipantRole.PARTICIPANT)
-                .build());
-        participantRepository.flush();
-
-        int seated = seatedCount(roomId);
-        int observers = observerCount(roomId);
-        publishSeatTaken(roomId, seat, bot, seated, observers);
-
-        RoomParticipant rp = participantRepository.findBySeatBot_Id(bot.getId()).orElseThrow();
-        messagingTemplate.convertAndSend(ROOM_TOPIC + roomId, RoomEvent.of(RoomEventType.PARTICIPANT_JOINED, ParticipantResponse.from(rp)));
-        invalidateCache(roomId);
+        persistSeatBot(room, seat, kind, true);
 
         Seat refreshed = seatRepository.findById(seatId).orElseThrow();
+        RoomSeatBot bot = roomSeatBotRepository.findBySeat_Id(seatId).orElseThrow();
         return SeatDto.builder()
                 .id(refreshed.getId().toString())
                 .x(refreshed.getX())
                 .y(refreshed.getY())
-                .occupiedBy(OccupantDto.fromSeatBot(bot))
+                .occupiedBy(OccupantDto.fromSeatBot(bot, publicAbsoluteUrlResolver))
                 .build();
     }
 
@@ -221,7 +277,7 @@ public class SeatBotService {
                 ParticipantResponse.builder()
                         .userId(botId.toString())
                         .name(botName)
-                        .avatarUrl(botAvatar)
+                        .avatarUrl(publicAbsoluteUrlResolver.resolve(botAvatar))
                         .role(ParticipantRole.PARTICIPANT)
                         .isBot(true)
                         .build()));
@@ -257,7 +313,7 @@ public class SeatBotService {
                     ParticipantResponse.builder()
                             .userId(botId.toString())
                             .name(name)
-                            .avatarUrl(avatar)
+                            .avatarUrl(publicAbsoluteUrlResolver.resolve(avatar))
                             .role(ParticipantRole.PARTICIPANT)
                             .isBot(true)
                             .build()));
@@ -276,6 +332,7 @@ public class SeatBotService {
      * chk_room_participant_user_or_seat_bot до того, как сработает ON DELETE CASCADE в БД.
      */
     private void deleteSeatBotEntity(RoomSeatBot bot) {
+        bot.getSeat().setSeatBot(null);
         participantRepository.findBySeatBot_Id(bot.getId()).ifPresent(participantRepository::delete);
         participantRepository.flush();
         roomSeatBotRepository.delete(bot);
@@ -288,7 +345,7 @@ public class SeatBotService {
                 .user(SeatTakenPayload.OccupantInfo.builder()
                         .id(bot.getId().toString())
                         .name(bot.getName())
-                        .avatarUrl(bot.getAvatarUrl())
+                        .avatarUrl(publicAbsoluteUrlResolver.resolve(bot.getAvatarUrl()))
                         .isBot(true)
                         .build())
                 .participantCount(participantCount)
