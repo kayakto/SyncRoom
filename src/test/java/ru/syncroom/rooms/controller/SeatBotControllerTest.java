@@ -343,8 +343,8 @@ class SeatBotControllerTest {
     }
 
     @Test
-    @DisplayName("Последний человек выходит — seat-боты удаляются")
-    void leaveRoom_clearsSeatBots() throws Exception {
+    @DisplayName("Последний человек выходит — seat-боты остаются в комнате")
+    void leaveRoom_keepsSeatBots() throws Exception {
         Room room = workRoom();
         join(room, member);
         Seat seat = freeSeat(room, 0.1, 0.2);
@@ -359,7 +359,7 @@ class SeatBotControllerTest {
                         .header("Authorization", memberToken))
                 .andExpect(status().isNoContent());
 
-        assertEquals(0, roomSeatBotRepository.countByRoom_Id(room.getId()));
+        assertEquals(1, roomSeatBotRepository.countByRoom_Id(room.getId()));
     }
 
     @Test

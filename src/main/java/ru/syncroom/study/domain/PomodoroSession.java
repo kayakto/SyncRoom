@@ -58,6 +58,13 @@ public class PomodoroSession {
     @Column(name = "remaining_seconds")
     private Integer remainingSeconds;
 
+    /**
+     * When phase is FINISHED and auto-restart is scheduled, wall-clock time to fire {@code startByBot}.
+     * Cleared on cancel, after successful restart (old row deleted), or when recovery skips the room.
+     */
+    @Column(name = "next_restart_at")
+    private OffsetDateTime nextRestartAt;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private OffsetDateTime createdAt;
 

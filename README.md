@@ -278,7 +278,7 @@ OLLAMA_VISION_MODEL=llava:7b
 
 **Аватары:** по умолчанию статический URL на backend (например `/icons/icon-192.png`); позже можно сменить на CDN, меняется только значение `avatarUrl` в данных.
 
-**Выход из комнаты:** когда в комнате не остаётся **ни одного живого** участника (`user_id` в участниках), сервер удаляет всех seat-ботов комнаты (места освобождаются, уходят `SEAT_LEFT` / `PARTICIPANT_LEFT`).
+**Seat-боты и выход людей:** дефолтные seat-боты привязаны к **комнате**, а не к сессии людей — при уходе последнего участника они **остаются** в `seats[].occupiedBy` (без лишних `SEAT_TAKEN` при следующем входе). Убрать бота можно только вручную через `DELETE .../bot` / админ-сценарии (`removeAllBotsInRoom` в коде не вызывается из `leave`).
 
 ### Projector — совместный просмотр (только leisure) + очередь
 
@@ -620,9 +620,9 @@ destination:/app/room/{roomId}/projector/control
 | Тип | Топик | Триггер | Payload |
 |-----|-------|---------|---------|
 | `PARTICIPANT_JOINED` | `.../room/{id}` | `POST /join` или посадка seat-бота | `{ userId, name, avatarUrl, joinedAt, role, isBot? }` (`OBSERVER` \| `PARTICIPANT`; у seat-бота `isBot: true`) |
-| `PARTICIPANT_LEFT` | `.../room/{id}` | `POST /leave`, снятие seat-бота, очистка ботов при последнем человеке или закрытие **последнего** STOMP (с JWT) | `{ userId, name, avatarUrl, isBot? }` (без `role`) |
+| `PARTICIPANT_LEFT` | `.../room/{id}` | `POST /leave`, снятие seat-бота, закрытие **последнего** STOMP (с JWT) | `{ userId, name, avatarUrl, isBot? }` (без `role`) |
 | `SEAT_TAKEN` | `.../room/{id}/seats` | `POST /sit` или `POST .../seats/{id}/bot` | `{ seatId, user: { id, name, avatarUrl, isBot? }, participantCount, observerCount }` |
-| `SEAT_LEFT` | `.../room/{id}/seats` | `POST /leave` (место), `DELETE .../bot`, выход из комнаты, очистка ботов | `{ seatId, userId, participantCount, observerCount }` |
+| `SEAT_LEFT` | `.../room/{id}/seats` | `POST /leave` (место), `DELETE .../bot`, выход из комнаты | `{ seatId, userId, participantCount, observerCount }` |
 | `PROJECTOR_STARTED` | `.../room/{id}/projector` | `POST /projector` | `{ host, mode, videoUrl, videoTitle, streamKey? }` |
 | `PROJECTOR_STOPPED` | `.../room/{id}/projector` | `DELETE /projector`, выход хоста или смена слота очереди | `{ hostId, reason? }` |
 | `PROJECTOR_CONTROL` | `.../room/{id}/projector` | WS SEND `/projector/control` | `{ action, positionMs }` |
@@ -755,6 +755,7 @@ gradle test
 | `ProjectorControllerTest` | REST + SRS callback для проектора | 12 |
 | `PomodoroControllerTest` | REST для помодоро (только GET; study-only; дефолты; 405 на POST/PUT/DELETE) | 17 |
 | `PomodoroAdvancePhaseTest` | `advancePhaseIfExpired`, BREAK/LONG_BREAK, WS, выборка | 6 |
+| `PomodoroManagerBotRestartIntegrationTest` | Персистентный `next_restart_at`, recovery, отложенный рестарт после FINISHED | 7 |
 | `StudyTaskControllerTest` | Таски, лайки, leaderboard, идемпотентность, не участник | 15 |
 | `RoomBotControllerTest` | Активация бота целей, автогенерация, break-триггер, негативные кейсы | 9 |
 | `GameControllerTest` | REST игры: create/current/ready/unready/leave/start, leaveRoom→игра | 12 |
@@ -762,7 +763,7 @@ gradle test
 | `GameServiceWebSocketTest` | Quiplash + Gartic WS flow, валидации, `PLAYER_KICKED` и таймауты | 10 |
 | `RoomChatControllerTest` | История чата: пагинация, пустой список, два автора, доступ | 7 |
 | `RoomChatServiceTest` | Валидация, trim, пагинация, broadcast, граница 4000 символов | 9 |
-| **Итого** | | **247** |
+| **Итого** | | **254** |
 
 Тесты используют H2 in-memory БД, `@MockitoBean SimpMessagingTemplate` (Spring Boot 3.4+), Redis не требуется.
 

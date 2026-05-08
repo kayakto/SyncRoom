@@ -132,6 +132,9 @@ public class PomodoroService {
             PomodoroSession current = existing.get();
             if ("FINISHED".equals(current.getPhase())) {
                 pomodoroRepo.delete(current);
+                // Иначе INSERT новой сессии может уйти в БД раньше DELETE → нарушение UNIQUE(room_id)
+                // (рестарт после FINISHED, recoverRestartTimers, тесты).
+                pomodoroRepo.flush();
             } else {
                 throw new BadRequestException("Pomodoro is already running in this room");
             }

@@ -5,6 +5,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -18,13 +19,18 @@ import ru.syncroom.study.domain.RoomBot;
 import ru.syncroom.study.dto.PomodoroManagerConfigRequest;
 import ru.syncroom.study.dto.PomodoroStartRequest;
 import ru.syncroom.study.dto.RoomBotResponse;
+import ru.syncroom.study.domain.PomodoroSession;
 import ru.syncroom.study.repository.PomodoroSessionRepository;
 import ru.syncroom.study.repository.RoomBotRepository;
 import ru.syncroom.users.domain.AuthProvider;
 import ru.syncroom.users.domain.User;
 import ru.syncroom.users.repository.UserRepository;
 
+import java.time.Duration;
+import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
@@ -118,6 +124,44 @@ public class PomodoroManagerBotService {
         scheduleAutostartIfNeeded(roomId, readConfig(saved.getConfig()));
     }
 
+    @EventListener(ApplicationReadyEvent.class)
+    @Transactional
+    public void recoverRestartTimers() {
+        List<PomodoroSession> pending = pomodoroSessionRepository.findByPhaseAndNextRestartAtIsNotNull("FINISHED");
+        int scheduled = 0;
+        for (PomodoroSession session : pending) {
+            UUID roomId = session.getRoom().getId();
+            var bots = roomBotRepository.findByRoom_IdAndBotTypeAndIsActiveTrue(roomId, BOT_TYPE);
+            if (bots.isEmpty()) {
+                session.setNextRestartAt(null);
+                pomodoroSessionRepository.save(session);
+                continue;
+            }
+            Map<String, Object> cfg = readConfig(bots.getLast().getConfig());
+            if (!readBool(cfg.get("autoRestart"), true)) {
+                session.setNextRestartAt(null);
+                pomodoroSessionRepository.save(session);
+                continue;
+            }
+            OffsetDateTime fireAt = session.getNextRestartAt();
+            long delaySec = Duration.between(OffsetDateTime.now(), fireAt).getSeconds();
+            if (delaySec <= 0) {
+                startPomodoroIfAbsent(roomId, cfg);
+            } else {
+                ScheduledFuture<?> future = scheduler.schedule(
+                        () -> startPomodoroIfAbsent(roomId, cfg),
+                        delaySec,
+                        TimeUnit.SECONDS
+                );
+                restartTimers.put(roomId, future);
+            }
+            scheduled++;
+        }
+        if (scheduled > 0) {
+            log.info("Recovered {} pomodoro restart timers", scheduled);
+        }
+    }
+
     @EventListener
     @Transactional
     public void onPomodoroEvent(PomodoroLifecycleEvent event) {
@@ -155,7 +199,18 @@ public class PomodoroManagerBotService {
 
     private void scheduleAutostartIfNeeded(UUID roomId, Map<String, Object> cfg) {
         boolean autoStart = readBool(cfg.get("autoStart"), true);
-        if (!autoStart || pomodoroSessionRepository.findByRoomId(roomId).isPresent()) {
+        if (!autoStart) {
+            return;
+        }
+        Optional<PomodoroSession> existing = pomodoroSessionRepository.findByRoomId(roomId);
+        if (existing.isPresent()) {
+            PomodoroSession s = existing.get();
+            if (!"FINISHED".equals(s.getPhase())) {
+                return;
+            }
+            if (s.getNextRestartAt() != null) {
+                return;
+            }
             return;
         }
         int delay = readInt(cfg.get("autoStartDelay"), 10);
@@ -169,6 +224,11 @@ public class PomodoroManagerBotService {
         }
         cancelRestart(roomId);
         int delay = readInt(cfg.get("restartDelay"), 300);
+        OffsetDateTime fireAt = OffsetDateTime.now().plusSeconds(delay);
+        pomodoroSessionRepository.findByRoomId(roomId).ifPresent(session -> {
+            session.setNextRestartAt(fireAt);
+            pomodoroSessionRepository.save(session);
+        });
         roomChatService.sendSystemBotMessage(
                 roomId,
                 getOrCreateBotUser().getId(),
@@ -193,7 +253,15 @@ public class PomodoroManagerBotService {
 
     private void cancelRestart(UUID roomId) {
         ScheduledFuture<?> old = restartTimers.remove(roomId);
-        if (old != null) old.cancel(false);
+        if (old != null) {
+            old.cancel(false);
+        }
+        pomodoroSessionRepository.findByRoomId(roomId).ifPresent(session -> {
+            if (session.getNextRestartAt() != null) {
+                session.setNextRestartAt(null);
+                pomodoroSessionRepository.save(session);
+            }
+        });
     }
 
     private Room requireRoom(UUID roomId) {

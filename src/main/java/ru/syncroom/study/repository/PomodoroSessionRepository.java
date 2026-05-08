@@ -26,6 +26,8 @@ public interface PomodoroSessionRepository extends JpaRepository<PomodoroSession
             + "AND p.phaseEndAt IS NOT NULL AND p.phaseEndAt <= :now")
     List<UUID> findRoomIdsWithExpiredPhase(@Param("now") OffsetDateTime now);
 
+    List<PomodoroSession> findByPhaseAndNextRestartAtIsNotNull(String phase);
+
     void deleteByRoomId(UUID roomId);
 }
 

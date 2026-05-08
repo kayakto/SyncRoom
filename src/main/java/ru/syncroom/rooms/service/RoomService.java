@@ -67,6 +67,12 @@ public class RoomService {
                 .toList();
     }
 
+    /** Сетка мест + дефолтные seat-боты; идемпотентно (новая комната, join, spare). */
+    private void ensureSeatGridAndDefaultBotsForRoom(UUID roomId) {
+        seatService.ensureSeatGridForRoom(roomId);
+        seatBotService.seedDefaultSeatBotsIfNeeded(roomId, false);
+    }
+
     // ─── Public API ─────────────────────────────────────────────────────────
 
     /**
@@ -128,6 +134,7 @@ public class RoomService {
                     .backgroundPicture(room.getBackgroundPicture())
                     .isActive(true)
                     .build());
+            ensureSeatGridAndDefaultBotsForRoom(newRoom.getId());
 
             participantRepository.save(RoomParticipant.builder()
                     .room(newRoom).user(user).role(ParticipantRole.OBSERVER).build());
@@ -148,15 +155,14 @@ public class RoomService {
                         .isActive(true)
                         .build());
                 spareRoomId = spare.getId();
+                ensureSeatGridAndDefaultBotsForRoom(spareRoomId);
             }
             actualRoomId = room.getId();
         }
 
-        seatService.ensureSeatGridForRoom(actualRoomId);
-        seatBotService.seedDefaultSeatBotsIfNeeded(actualRoomId, false);
+        ensureSeatGridAndDefaultBotsForRoom(actualRoomId);
         if (spareRoomId != null) {
-            seatService.ensureSeatGridForRoom(spareRoomId);
-            seatBotService.seedDefaultSeatBotsIfNeeded(spareRoomId, false);
+            ensureSeatGridAndDefaultBotsForRoom(spareRoomId);
         }
 
         Room actualRoom = roomRepository.findById(actualRoomId).orElseThrow();
@@ -211,9 +217,6 @@ public class RoomService {
         participantRepository.deleteByRoomIdAndUserId(roomId, userId);
 
         int humanAfter = participantRepository.countHumanParticipantsByRoomId(roomId);
-        if (humanAfter == 0) {
-            seatBotService.removeAllBotsInRoom(roomId);
-        }
 
         int countAfter = humanAfter;
         boolean shouldBeActive = countAfter < room.getMaxParticipants();
