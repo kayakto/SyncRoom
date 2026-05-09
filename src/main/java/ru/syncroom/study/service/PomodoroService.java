@@ -103,13 +103,14 @@ public class PomodoroService {
                 .build();
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public PomodoroResponse get(UUID roomId, UUID userId) {
         Room room = requireRoom(roomId);
         assertPomodoroAllowed(room);
         if (!participantRepository.existsByRoomIdAndUserId(roomId, userId)) {
             throw new BadRequestException("User is not a participant of this room");
         }
+        advancePhaseIfExpired(roomId);
         PomodoroSession session = pomodoroRepo.findByRoomId(roomId)
                 .orElseThrow(() -> new NotFoundException("Pomodoro is not running in this room"));
         return toResponse(session);
