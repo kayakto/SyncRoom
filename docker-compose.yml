@@ -20,6 +20,14 @@ services:
       retries: 5
     networks:
       - syncroom-network
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 1G
+        reservations:
+          cpus: "0.25"
+          memory: 256M
 
   # Spring Boot приложение
   app:
@@ -66,6 +74,9 @@ services:
       GAMES_BOT_DRAW_MODEL_TIMEOUT_SEC: ${GAMES_BOT_DRAW_MODEL_TIMEOUT_SEC:-150}
       GAMES_GARTIC_TEXT_TIMEOUT_SEC: ${GAMES_GARTIC_TEXT_TIMEOUT_SEC:-60}
       GAMES_GARTIC_DRAW_TIMEOUT_SEC: ${GAMES_GARTIC_DRAW_TIMEOUT_SEC:-180}
+      # Cap JVM heap so the app cannot drown out Postgres / SRS on an 8 GB host.
+      # MaxRAMPercentage=50 + container memory 2 GB = ~1 GB heap ceiling.
+      JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:--XX:+UseG1GC -XX:MaxRAMPercentage=50 -XX:InitialRAMPercentage=25}
     ports:
       - "${APP_PORT:-8080}:8080"
     volumes:
@@ -74,6 +85,14 @@ services:
     networks:
       - syncroom-network
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2.00"
+          memory: 2G
+        reservations:
+          cpus: "0.50"
+          memory: 512M
 
   # Local inference for game bots (DRAW/GUESS)
   inference-mock:
@@ -98,8 +117,18 @@ services:
     networks:
       - syncroom-network
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 512M
+        reservations:
+          cpus: "0.10"
+          memory: 128M
 
-  # SRS media server for RTMP → HLS streaming (Projector STREAM mode)
+  # SRS media server for RTMP → HLS streaming (Projector STREAM mode).
+  # Sized for a 4 vCPU / 8 GB host: SRS only remuxes (no transcoding), so
+  # 0.5 CPU and 256 MB are enough for dozens of viewers of a 720p stream.
   media:
     image: ossrs/srs:5
     container_name: syncroom-media
@@ -114,6 +143,14 @@ services:
     networks:
       - syncroom-network
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+        reservations:
+          cpus: "0.10"
+          memory: 64M
 
 volumes:
   postgres_data:

@@ -203,7 +203,7 @@ public class SeatService {
 
     /**
      * Release all seats a user occupies in a given room.
-     * Called automatically on leaveRoom (including leave triggered by WebSocket disconnect).
+     * Called automatically on {@link RoomService#leaveRoom}.
      * Does nothing (silently) if user has no seat.
      */
     @Transactional
@@ -217,7 +217,7 @@ public class SeatService {
                 int seated = seatedCount(roomId);
                 int observers = observerCount(roomId);
                 publishSeatLeft(roomId, seatId, userId, seated, observers);
-                log.debug("Released seat for user {} in room {} (roomLeave/disconnect)", userId, roomId);
+                log.debug("Released seat for user {} in room {} (roomLeave)", userId, roomId);
             }
         });
     }

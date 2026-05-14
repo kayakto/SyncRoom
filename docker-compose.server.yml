@@ -1,4 +1,13 @@
 services:
+  # Resource budget for a 4 vCPU / 8 GB host:
+  #   postgres   : 1.0 CPU / 1.0 GB
+  #   app (JVM)  : 2.0 CPU / 2.0 GB
+  #   inference  : 0.5 CPU / 0.5 GB
+  #   media (SRS): 0.5 CPU / 0.25 GB
+  #   redis      : 0.5 CPU / 0.25 GB
+  #   frontend   : 0.25 CPU / 0.1 GB
+  #   ----------------------------------
+  #   total      : ~4.75 CPU / ~4.1 GB   (CPU is a soft cap, never all at once)
   postgres:
     image: postgres:17-alpine
     container_name: syncroom-postgres
@@ -11,16 +20,29 @@ services:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - syncroom-network
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 1G
+        reservations:
+          cpus: "0.25"
+          memory: 256M
 
   redis:
     image: redis:7-alpine
     container_name: syncroom-redis
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "192mb", "--maxmemory-policy", "allkeys-lru"]
     volumes:
       - redis_data:/data
     networks:
       - syncroom-network
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
 
   app:
     build:
@@ -34,6 +56,8 @@ services:
       SPRING_PROFILES_ACTIVE: docker
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
+      JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:--XX:+UseG1GC -XX:MaxRAMPercentage=50 -XX:InitialRAMPercentage=25}
+      SRS_HOST: ${SRS_HOST:-syncroom.ru}
     depends_on:
       - postgres
       - redis
@@ -45,6 +69,14 @@ services:
       - ./data/storage:/tmp/syncroom-storage
     networks:
       - syncroom-network
+    deploy:
+      resources:
+        limits:
+          cpus: "2.00"
+          memory: 2G
+        reservations:
+          cpus: "0.50"
+          memory: 512M
 
   inference-mock:
     build:
@@ -54,6 +86,33 @@ services:
     restart: unless-stopped
     networks:
       - syncroom-network
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 512M
+
+  # SRS media server: RTMP intake on 1935, HLS on 8085.
+  # Sized for ~30 concurrent HLS viewers of a single 720p/2.5 Mbit/s stream.
+  media:
+    image: ossrs/srs:5
+    container_name: syncroom-media
+    restart: unless-stopped
+    ports:
+      - "1935:1935"
+      - "127.0.0.1:8085:8080"
+    volumes:
+      - ./srs.conf:/usr/local/srs/conf/docker.conf
+    command: ./objs/srs -c conf/docker.conf
+    depends_on:
+      - app
+    networks:
+      - syncroom-network
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
 
   frontend:
     build:
@@ -68,6 +127,11 @@ services:
       - "127.0.0.1:3000:80"
     networks:
       - syncroom-network
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
 
 volumes:
   postgres_data:

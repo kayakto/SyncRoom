@@ -548,17 +548,14 @@ Authorization:Bearer <accessToken>
 
 ### Обрыв WebSocket (закрытие STOMP-сессии)
 
-Если клиент **закрывает последнее** STOMP-подключение, в котором при CONNECT был передан валидный JWT (`Authorization: Bearer …`), сервер выполняет **тот же выход из комнаты**, что и при `POST /api/rooms/{roomId}/leave`:
+**Участие в комнате** (`room_participants`) **не** зависит от живости WebSocket: запись создаётся только `POST /api/rooms/{roomId}/join` и удаляется только явным `POST /api/rooms/{roomId}/leave`. Обрыв STOMP не вызывает `leave` и не шлёт `PARTICIPANT_LEFT`.
 
-- освобождается место (при необходимости уходит `SEAT_LEFT` на `/topic/room/{roomId}/seats`);
-- участник удаляется из комнаты, подписчикам `/topic/room/{roomId}` уходит `PARTICIPANT_LEFT`;
-- **игра:** как при HTTP leave — выход из лобби / отмена `IN_PROGRESS` для игрока (см. `GAME_CANCELLED` в таблице ниже).
+Для **лобби игры** при закрытии последней STOMP-сессии с валидным JWT планируется сброс «готов» через таймер (см. `GameLobbyDisconnectListener` / `GameService#scheduleLobbyUnreadyOnDisconnect`) — это не выход из комнаты.
 
 **Нюансы:**
 
-- Без JWT в CONNECT (`StompPrincipal` не установлен) при отключении комната **не** меняется.
-- Если у пользователя **несколько** одновременных STOMP-сессий (две вкладки и т.п.), закрытие одной сессии **не** удаляет из комнаты — пока жива хотя бы одна сессия с тем же пользователем.
-- Клиент **без** WebSocket (только REST) при обрыве сети в БД остаётся участником, пока не вызовет `POST .../leave` или не подключит STOMP и снова не отключится.
+- Без JWT в CONNECT (`StompPrincipal` не установлен) логика отключения, завязанная на пользователя, не срабатывает.
+- Клиент только на REST остаётся участником при любых обрывах сети, пока не вызовет `POST .../leave`.
 
 ### Топики
 
@@ -746,8 +743,7 @@ gradle test
 | `UserControllerTest` | GET/PUT /me | 10 |
 | `PointControllerTest` | CRUD точек | 24 |
 | `RoomControllerTest` | GET rooms/my, join, leave | 35 |
-| `RoomServiceWebSocketTest` | WS-события PARTICIPANT_JOINED/LEFT, leave при обрыве WS | 16 |
-| `WebSocketRoomDisconnectListenerTest` | STOMP disconnect → leave комнаты, мультисессии | 3 |
+| `RoomServiceWebSocketTest` | WS-события PARTICIPANT_JOINED/LEFT; обрыв STOMP не снимает участие | 15 |
 | `SeatControllerTest` | sit, stand-up, auto-move, 403, 409, 404 | 10 |
 | `SeatBotControllerTest` | REST seat-ботов, каталог, лимиты, 409 с человеком/ботом | 12 |
 | `DefaultSeatBotsByContextTest` | Маппинг контекстов → типы ботов (unit) | 8 |
@@ -763,7 +759,7 @@ gradle test
 | `GameServiceWebSocketTest` | Quiplash + Gartic WS flow, валидации, `PLAYER_KICKED` и таймауты | 10 |
 | `RoomChatControllerTest` | История чата: пагинация, пустой список, два автора, доступ | 7 |
 | `RoomChatServiceTest` | Валидация, trim, пагинация, broadcast, граница 4000 символов | 9 |
-| **Итого** | | **254** |
+| **Итого** | | **250** |
 
 Тесты используют H2 in-memory БД, `@MockitoBean SimpMessagingTemplate` (Spring Boot 3.4+), Redis не требуется.
 

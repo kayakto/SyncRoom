@@ -5,16 +5,24 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.messaging.Message;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.springframework.messaging.simp.stomp.StompCommand;
+import org.springframework.messaging.simp.stomp.StompHeaderAccessor;
+import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.socket.CloseStatus;
+import org.springframework.web.socket.messaging.SessionDisconnectEvent;
 import ru.syncroom.rooms.domain.ParticipantRole;
 import ru.syncroom.rooms.domain.Room;
 import ru.syncroom.rooms.domain.RoomParticipant;
 import ru.syncroom.rooms.dto.JoinRoomResponse;
 import ru.syncroom.rooms.dto.ParticipantResponse;
+import ru.syncroom.common.config.WebSocketSecurityConfig;
 import ru.syncroom.rooms.repository.RoomParticipantRepository;
 import ru.syncroom.rooms.repository.RoomRepository;
 import ru.syncroom.rooms.ws.RoomEvent;
@@ -53,6 +61,9 @@ class RoomServiceWebSocketTest {
 
     @Autowired
     private RoomParticipantRepository participantRepository;
+
+    @Autowired
+    private ApplicationEventPublisher eventPublisher;
 
     /** Mock the messaging template — no real STOMP broker needed in tests */
     @MockitoBean
@@ -290,27 +301,28 @@ class RoomServiceWebSocketTest {
     }
 
     @Test
-    @DisplayName("leaveRoomOnWebSocketDisconnect удаляет участие и шлёт PARTICIPANT_LEFT")
-    void leaveRoomOnWebSocketDisconnect_sameAsLeaveRoom() {
-        participantRepository.save(RoomParticipant.builder()
-                .room(testRoom)
-                .user(testUser)
-                .role(ParticipantRole.OBSERVER)
-                .build());
+    @DisplayName("SessionDisconnectEvent не снимает участие: только POST /leave меняет participants")
+    void stompSessionDisconnect_preservesRoomParticipant() {
+        roomService.joinRoom(testRoom.getId(), testUser.getId());
+        assertTrue(participantRepository.existsByRoomIdAndUserId(testRoom.getId(), testUser.getId()));
 
-        roomService.leaveRoomOnWebSocketDisconnect(testUser.getId());
+        var principal = new WebSocketSecurityConfig.StompPrincipal(testUser);
+        String sessionId = "integration-test-stomp-session";
+        StompHeaderAccessor acc = StompHeaderAccessor.create(StompCommand.DISCONNECT);
+        acc.setSessionId(sessionId);
+        acc.setUser(principal);
+        Message<byte[]> message = MessageBuilder.createMessage(new byte[0], acc.getMessageHeaders());
+        eventPublisher.publishEvent(
+                new SessionDisconnectEvent(this, message, sessionId, CloseStatus.GOING_AWAY));
 
-        assertFalse(participantRepository.existsByRoomIdAndUserId(testRoom.getId(), testUser.getId()));
-        verify(messagingTemplate, times(1)).convertAndSend(
+        assertTrue(
+                participantRepository.existsByRoomIdAndUserId(testRoom.getId(), testUser.getId()),
+                "Участник остаётся в комнате после обрыва WS; выход только через leaveRoom (REST)");
+        verify(messagingTemplate, atLeastOnce()).convertAndSend(
                 eq("/topic/room/" + testRoom.getId()),
-                argThat((RoomEvent event) -> event.getType() == RoomEventType.PARTICIPANT_LEFT)
-        );
-    }
-
-    @Test
-    @DisplayName("leaveRoomOnWebSocketDisconnect идемпотентен если пользователь не в комнате")
-    void leaveRoomOnWebSocketDisconnect_noOpWhenNotInRoom() {
-        roomService.leaveRoomOnWebSocketDisconnect(testUser.getId());
-        verifyNoInteractions(messagingTemplate);
+                any(RoomEvent.class));
+        verify(messagingTemplate, never()).convertAndSend(
+                eq("/topic/room/" + testRoom.getId()),
+                argThat((RoomEvent event) -> event.getType() == RoomEventType.PARTICIPANT_LEFT));
     }
 }
