@@ -188,12 +188,13 @@ public class GameQueueService {
         touchQueueNotEmpty(queue);
         gameQueueRepository.save(queue);
 
-        gameService.startGame(session.getId());
-
+        // Clients learn gameId from QUEUE_STARTED and subscribe to /topic/game/{id} before phases are published.
         queueEventSender.send(roomId, "QUEUE_STARTED", Map.of(
                 "gameType", gameType,
                 "gameSessionId", session.getId().toString()
         ));
+
+        gameService.startGame(session.getId());
 
         return GameQueueStartResponse.builder()
                 .gameSessionId(session.getId().toString())

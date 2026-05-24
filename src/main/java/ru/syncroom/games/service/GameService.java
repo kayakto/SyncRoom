@@ -65,6 +65,8 @@ public class GameService {
     private final PublicAbsoluteUrlResolver publicAbsoluteUrlResolver;
     private static final int LOBBY_DISCONNECT_UNREADY_DELAY_SEC = 10;
     private static final int TOTAL_ROUNDS = 3;
+    private static final int QUIPLASH_ANSWER_LIMIT_SEC = 60;
+    private static final int QUIPLASH_VOTE_LIMIT_SEC = 30;
     private static final int GARTIC_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
     private static final int BOT_STEP_MAX_RETRIES = 3;
     private static final String DEFAULT_TEXT = "...";
@@ -1484,6 +1486,146 @@ public class GameService {
         return garticDrawingAssetStorage.publicDownloadRedirect(gameId, assetId)
                 .map(GarticDrawingServeResult::redirect)
                 .orElseGet(() -> GarticDrawingServeResult.bytes(garticDrawingAssetStorage.loadPng(gameId, assetId)));
+    }
+
+    /**
+     * Re-sends {@code GAME_STARTED} and the current phase to a subscriber who missed earlier STOMP messages.
+     */
+    @Transactional(readOnly = true)
+    public void replayMissedEventsOnSubscribe(UUID gameId, UUID userId) {
+        GameSession game = gameSessionRepository.findById(gameId).orElse(null);
+        if (game == null || !"IN_PROGRESS".equals(game.getStatus())) {
+            return;
+        }
+        GamePlayer player = gamePlayerRepository.findByGameIdAndUserId(gameId, userId).orElse(null);
+        if (player == null) {
+            return;
+        }
+
+        List<GamePlayer> players = gamePlayerRepository.findByGameId(gameId);
+        List<Map<String, Object>> playersPayload = players.stream().map(p -> {
+            Map<String, Object> m = new HashMap<>();
+            m.put("id", participantId(p).toString());
+            m.put("name", participantName(p));
+            m.put("avatarUrl", participantAvatar(p));
+            m.put("isBot", isBot(p));
+            return m;
+        }).toList();
+        eventSender.sendToPlayer(gameId, userId, "GAME_STARTED", Map.of("players", playersPayload));
+
+        if ("GARTIC_PHONE".equals(game.getGameType())) {
+            replayGarticPhaseForSubscriber(gameId, userId, player, players);
+        } else {
+            replayQuiplashPhaseForSubscriber(gameId, userId, player);
+        }
+    }
+
+    private void replayQuiplashPhaseForSubscriber(UUID gameId, UUID userId, GamePlayer player) {
+        List<QuiplashPrompt> prompts = promptRepository.findByGameIdOrderByRoundAsc(gameId);
+        if (prompts.isEmpty()) {
+            return;
+        }
+        QuiplashPrompt prompt = prompts.get(prompts.size() - 1);
+        int round = prompt.getRound();
+
+        int voteRemaining = gameTimerService.getRemainingSeconds(GameTimerService.voteKey(gameId, round));
+        if (voteRemaining >= 0) {
+            sendQuiplashVotesSnapshot(gameId, userId, prompt, voteRemaining);
+            return;
+        }
+
+        int answerRemaining = gameTimerService.getRemainingSeconds(GameTimerService.answerKey(gameId, round));
+        if (answerRemaining >= 0) {
+            sendQuiplashPromptSnapshot(gameId, userId, prompt, answerRemaining, player);
+            return;
+        }
+
+        long playersCount = gamePlayerRepository.countByGameId(gameId);
+        long answerCount = answerRepository.countByPromptId(prompt.getId());
+        long voteCount = voteRepository.countByPromptId(prompt.getId());
+
+        if (voteCount > 0 || (answerCount >= playersCount && playersCount > 0)) {
+            sendQuiplashVotesSnapshot(gameId, userId, prompt, QUIPLASH_VOTE_LIMIT_SEC);
+        } else if (answerRepository.findByPromptIdAndPlayerId(prompt.getId(), player.getId()).isPresent()) {
+            eventSender.sendToPlayer(gameId, userId, "WAITING_FOR_OTHERS", Map.of());
+        } else {
+            sendQuiplashPromptSnapshot(gameId, userId, prompt, QUIPLASH_ANSWER_LIMIT_SEC, player);
+        }
+    }
+
+    private void sendQuiplashPromptSnapshot(UUID gameId, UUID userId, QuiplashPrompt prompt, int timeLimitSec,
+                                            GamePlayer player) {
+        if (answerRepository.findByPromptIdAndPlayerId(prompt.getId(), player.getId()).isPresent()) {
+            eventSender.sendToPlayer(gameId, userId, "WAITING_FOR_OTHERS", Map.of());
+            return;
+        }
+        eventSender.sendToPlayer(gameId, userId, "PROMPT_RECEIVED", Map.of(
+                "promptId", prompt.getId().toString(),
+                "text", prompt.getText(),
+                "timeLimit", timeLimitSec
+        ));
+    }
+
+    private void sendQuiplashVotesSnapshot(UUID gameId, UUID userId, QuiplashPrompt prompt, int timeLimitSec) {
+        List<Map<String, Object>> answers = answerRepository.findByPromptId(prompt.getId()).stream()
+                .map(a -> Map.<String, Object>of(
+                        "answerId", a.getId().toString(),
+                        "text", a.getText()
+                )).toList();
+        eventSender.sendToPlayer(gameId, userId, "WAITING_FOR_VOTES", Map.of(
+                "promptId", prompt.getId().toString(),
+                "answers", answers,
+                "timeLimit", timeLimitSec
+        ));
+    }
+
+    private void replayGarticPhaseForSubscriber(UUID gameId, UUID userId, GamePlayer player,
+                                                List<GamePlayer> players) {
+        List<GamePlayer> orderedPlayers = orderedPlayers(players);
+        int playersCount = orderedPlayers.size();
+        if (playersCount == 0) {
+            return;
+        }
+        int currentStep = detectCurrentGarticStep(gameId, playersCount);
+        if (currentStep > playersCount) {
+            return;
+        }
+
+        int playerIndex = indexOfPlayer(orderedPlayers, player.getId());
+        GarticChain chain = resolveChainForPlayerStep(gameId, orderedPlayers, playerIndex, currentStep);
+        if (garticStepRepository.findByChainIdAndStepNumber(chain.getId(), currentStep).isPresent()) {
+            eventSender.sendToPlayer(gameId, userId, "WAITING_FOR_OTHERS", Map.of(
+                    "stepNumber", currentStep
+            ));
+            return;
+        }
+
+        int timeLimit = gameTimerService.getRemainingSeconds(garticStepKey(gameId, currentStep));
+        if (timeLimit < 0) {
+            timeLimit = "DRAWING".equals(expectedGarticType(currentStep)) ? garticDrawTimeoutSec : garticTextTimeoutSec;
+        }
+
+        String stepType = expectedGarticType(currentStep);
+        Map<String, Object> payload = new HashMap<>();
+        if ("DRAWING".equals(stepType)) {
+            String phrase = garticStepRepository.findByChainIdAndStepNumber(chain.getId(), currentStep - 1)
+                    .map(GarticStep::getContent).orElse(DEFAULT_TEXT);
+            payload.put("phrase", phrase);
+            payload.put("timeLimit", timeLimit);
+            eventSender.sendToPlayer(gameId, userId, "STEP_DRAW", payload);
+        } else if (currentStep == 1) {
+            payload.put("stepNumber", 1);
+            payload.put("timeLimit", timeLimit);
+            eventSender.sendToPlayer(gameId, userId, "STEP_WRITE", payload);
+        } else {
+            String storedDrawing = garticStepRepository.findByChainIdAndStepNumber(chain.getId(), currentStep - 1)
+                    .map(GarticStep::getContent)
+                    .orElseGet(() -> garticDrawingAssetStorage.saveDataUrlAsAssetRef(
+                            gameId, WHITE_PNG_BASE64, GARTIC_IMAGE_MAX_BYTES));
+            putDrawingWsFields(gameId, payload, storedDrawing);
+            payload.put("timeLimit", timeLimit);
+            eventSender.sendToPlayer(gameId, userId, "STEP_GUESS", payload);
+        }
     }
 
     private GameResponse toResponse(GameSession session) {

@@ -26,6 +26,17 @@ public class GameTimerService {
         }
     }
 
+    /**
+     * Seconds until the scheduled task runs, or {@code -1} if there is no active timer for the key.
+     */
+    public int getRemainingSeconds(String key) {
+        ScheduledFuture<?> future = timers.get(key);
+        if (future == null || future.isDone()) {
+            return -1;
+        }
+        return (int) Math.max(0, future.getDelay(TimeUnit.SECONDS));
+    }
+
     public void cancelRoundTimers(UUID gameId, int round) {
         cancel(answerKey(gameId, round));
         cancel(voteKey(gameId, round));
