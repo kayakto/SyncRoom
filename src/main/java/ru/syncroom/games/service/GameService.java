@@ -179,8 +179,25 @@ public class GameService {
                         .name(bot.getName())
                         .avatarUrl(publicAbsoluteUrlResolver.resolve(bot.getAvatarUrl()))
                         .botType(bot.getBotType())
+                        .supportedGameTypes(supportedGameTypesFor(bot.getBotType()))
                         .build())
                 .toList();
+    }
+
+    /**
+     * То же правило, что {@link ru.syncroom.games.service.GameQueueService#validateBotTypeForGame}.
+     */
+    static List<String> supportedGameTypesFor(String botType) {
+        if (botType == null) {
+            return List.of();
+        }
+        if (botType.startsWith("GARTIC_")) {
+            return List.of("GARTIC_PHONE");
+        }
+        if (botType.startsWith("QUIPLASH_")) {
+            return List.of("QUIPLASH");
+        }
+        return List.of();
     }
 
     @Transactional

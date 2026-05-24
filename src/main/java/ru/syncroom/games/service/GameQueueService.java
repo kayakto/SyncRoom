@@ -183,6 +183,9 @@ public class GameQueueService {
         gameQueueBotRepository.deleteAll(bots);
 
         queue = reloadQueue(queue.getId());
+        // deleteAll не очищает in-memory @OneToMany — иначе save() падает с ObjectDeletedException
+        queue.getPlayers().clear();
+        queue.getBots().clear();
         queue.setLinkedGameSessionId(session.getId());
         queue.setStatus("IN_PROGRESS");
         touchQueueNotEmpty(queue);

@@ -19,6 +19,8 @@ import ru.syncroom.rooms.domain.Room;
 import ru.syncroom.rooms.domain.RoomParticipant;
 import ru.syncroom.rooms.repository.RoomParticipantRepository;
 import ru.syncroom.rooms.repository.RoomRepository;
+import ru.syncroom.games.repository.BotUserRepository;
+import ru.syncroom.games.support.GameBotCatalogFixture;
 import ru.syncroom.users.domain.AuthProvider;
 import ru.syncroom.users.domain.User;
 import ru.syncroom.users.repository.UserRepository;
@@ -55,6 +57,8 @@ class GameControllerTest {
     private RoomParticipantRepository participantRepository;
     @Autowired
     private JwtTokenService jwtTokenService;
+    @Autowired
+    private BotUserRepository botUserRepository;
 
     @MockitoBean
     private SimpMessagingTemplate messagingTemplate;
@@ -76,6 +80,7 @@ class GameControllerTest {
         participantRepository.deleteAll();
         roomRepository.deleteAll();
         userRepository.deleteAll();
+        botUserRepository.deleteAll();
 
         u1 = createUser("g1@example.com");
         u2 = createUser("g2@example.com");
@@ -208,6 +213,22 @@ class GameControllerTest {
                         .header("Authorization", "Bearer " + t2))
                 .andExpect(status().isOk())
                 .andExpect(content().bytes(png));
+    }
+
+    @Test
+    @DisplayName("GET /api/bots/available — supportedGameTypes и ≥3 Quiplash-ботов")
+    void availableBotsIncludeSupportedGameTypes() throws Exception {
+        GameBotCatalogFixture.seedIfEmpty(botUserRepository);
+
+        mockMvc.perform(get("/api/bots/available")
+                        .header("Authorization", "Bearer " + t1))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.botType == 'QUIPLASH_JOKER')].supportedGameTypes[0]")
+                        .value("QUIPLASH"))
+                .andExpect(jsonPath("$[?(@.botType == 'GARTIC_DRAWER')].supportedGameTypes[0]")
+                        .value("GARTIC_PHONE"))
+                .andExpect(jsonPath("$[?(@.botType =~ /QUIPLASH.*/)]", hasSize(3)))
+                .andExpect(jsonPath("$[?(@.botType =~ /GARTIC.*/)]", hasSize(4)));
     }
 
     @Test

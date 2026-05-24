@@ -4,8 +4,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import ru.syncroom.games.repository.BotUserRepository;
 import ru.syncroom.games.repository.GameQueuePlayerRepository;
 import ru.syncroom.games.service.GameQueueService;
+import ru.syncroom.games.support.GameBotCatalogFixture;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -25,6 +27,7 @@ import ru.syncroom.users.domain.User;
 import ru.syncroom.users.repository.UserRepository;
 
 import java.time.OffsetDateTime;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -55,6 +58,8 @@ class GameQueueControllerTest {
     private GameQueueService gameQueueService;
     @Autowired
     private GameQueuePlayerRepository gameQueuePlayerRepository;
+    @Autowired
+    private BotUserRepository botUserRepository;
 
     @MockitoBean
     private SimpMessagingTemplate messagingTemplate;
@@ -70,6 +75,8 @@ class GameQueueControllerTest {
         participantRepository.deleteAll();
         roomRepository.deleteAll();
         userRepository.deleteAll();
+        botUserRepository.deleteAll();
+        GameBotCatalogFixture.seedIfEmpty(botUserRepository);
 
         user = userRepository.save(User.builder()
                 .name("Queue User")
@@ -207,6 +214,53 @@ class GameQueueControllerTest {
     }
 
     @Test
+    @DisplayName("одиночный игрок: 1 человек + 2 Quiplash-бота → старт очереди OK")
+    void soloPlayerCanStartQuiplashWithTwoBots() throws Exception {
+        joinQueue("QUIPLASH");
+        for (String botId : botIdsWithPrefix("QUIPLASH_", 2)) {
+            addBotToQueue("QUIPLASH", botId);
+        }
+        setHumanReady("QUIPLASH", true);
+
+        mockMvc.perform(post("/api/rooms/{roomId}/games/queues/{gameType}/start", room.getId(), "QUIPLASH")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.gameSessionId").isNotEmpty());
+
+        mockMvc.perform(get("/api/rooms/{roomId}/games/queues", room.getId())
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$['QUIPLASH'].status").value("IN_PROGRESS"));
+    }
+
+    @Test
+    @DisplayName("одиночный игрок: 1 человек + 3 Gartic-бота → старт очереди OK")
+    void soloPlayerCanStartGarticWithThreeBots() throws Exception {
+        joinQueue("GARTIC_PHONE");
+        for (String botId : botIdsWithPrefix("GARTIC_", 3)) {
+            addBotToQueue("GARTIC_PHONE", botId);
+        }
+        setHumanReady("GARTIC_PHONE", true);
+
+        mockMvc.perform(post("/api/rooms/{roomId}/games/queues/{gameType}/start", room.getId(), "GARTIC_PHONE")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.gameSessionId").isNotEmpty());
+    }
+
+    @Test
+    @DisplayName("одиночный Quiplash: одного бота недостаточно для старта")
+    void soloPlayerCannotStartQuiplashWithOnlyOneBot() throws Exception {
+        joinQueue("QUIPLASH");
+        addBotToQueue("QUIPLASH", botIdsWithPrefix("QUIPLASH_", 1).getFirst());
+        setHumanReady("QUIPLASH", true);
+
+        mockMvc.perform(post("/api/rooms/{roomId}/games/queues/{gameType}/start", room.getId(), "QUIPLASH")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
     @DisplayName("POST ready обновляет флаг")
     void readyToggle() throws Exception {
         mockMvc.perform(post("/api/rooms/{roomId}/games/queues/QUIPLASH/join", room.getId())
@@ -218,5 +272,35 @@ class GameQueueControllerTest {
                         .content("{\"ready\":true}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.players[0].isReady").value(true));
+    }
+
+    private void joinQueue(String gameType) throws Exception {
+        mockMvc.perform(post("/api/rooms/{roomId}/games/queues/{gameType}/join", room.getId(), gameType)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk());
+    }
+
+    private void setHumanReady(String gameType, boolean ready) throws Exception {
+        mockMvc.perform(post("/api/rooms/{roomId}/games/queues/{gameType}/ready", room.getId(), gameType)
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"ready\":" + ready + "}"))
+                .andExpect(status().isOk());
+    }
+
+    private void addBotToQueue(String gameType, String botId) throws Exception {
+        mockMvc.perform(post("/api/rooms/{roomId}/games/queues/{gameType}/bots", room.getId(), gameType)
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"botId\":\"" + botId + "\",\"difficulty\":\"MEDIUM\"}"))
+                .andExpect(status().isOk());
+    }
+
+    private List<String> botIdsWithPrefix(String prefix, int limit) {
+        return botUserRepository.findByIsActiveTrueOrderByNameAsc().stream()
+                .filter(b -> b.getBotType() != null && b.getBotType().startsWith(prefix))
+                .limit(limit)
+                .map(b -> b.getId().toString())
+                .toList();
     }
 }
