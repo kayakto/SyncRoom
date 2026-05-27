@@ -177,7 +177,12 @@ public class ProjectorService {
 
         ProjectorSession session = projectorRepo.save(sessionBuilder.build());
         publish(roomId, ProjectorEventType.PROJECTOR_STARTED, buildStartedPayload(session));
-        scheduleRoomTimeout(roomId, item.getSlotDurationSec());
+        // EMBED slots auto-advance after durationSec; STREAM runs until the host stops or leaves.
+        if ("EMBED".equals(item.getMode())) {
+            scheduleRoomTimeout(roomId, item.getSlotDurationSec());
+        } else {
+            cancelRoomTimeout(roomId);
+        }
     }
 
     private void promoteNext(UUID roomId) {

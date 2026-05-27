@@ -20,9 +20,8 @@ public class ProjectorRequest {
     private String videoTitle;
 
     /**
-     * Optional full media duration in seconds.
-     * If <= 42 then item can be played fully; if > 42 playback is limited to 42 seconds.
-     * If omitted, backend uses 42 seconds slot by default.
+     * EMBED only: slot length in seconds (capped at 42). Ignored for STREAM — live slots end
+     * when the host stops the projector or leaves the room.
      */
     private Integer durationSec;
 }
