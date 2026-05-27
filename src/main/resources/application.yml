@@ -41,6 +41,8 @@ springdoc:
 # SRS media server — used for STREAM mode projector sessions
 srs:
   host: ${SRS_HOST:localhost}
+  hls-base-url: ${SRS_HLS_BASE_URL:}
+  rtmp-port: ${SRS_RTMP_PORT:1935}
 
 bots:
   inference:

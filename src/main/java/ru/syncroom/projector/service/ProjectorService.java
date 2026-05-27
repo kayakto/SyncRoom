@@ -235,11 +235,20 @@ public class ProjectorService {
     }
 
     private String buildHlsUrl(String streamKey) {
+        String base = srsProperties.getHlsBaseUrl();
+        if (base != null && !base.isBlank()) {
+            return base.replaceAll("/$", "") + "/" + streamKey + ".m3u8";
+        }
         return String.format("http://%s:8085/live/%s.m3u8", srsProperties.getHost(), streamKey);
     }
 
     private String buildRtmpUrl(String streamKey) {
-        return String.format("rtmp://%s:1935/live/%s", srsProperties.getHost(), streamKey);
+        return String.format(
+                "rtmp://%s:%d/live/%s",
+                srsProperties.getHost(),
+                srsProperties.getRtmpPort(),
+                streamKey
+        );
     }
 
     // ─── Public API ─────────────────────────────────────────────────────────

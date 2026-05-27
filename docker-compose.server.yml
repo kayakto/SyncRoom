@@ -58,6 +58,8 @@ services:
       POSTGRES_PORT: 5432
       JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:--XX:+UseG1GC -XX:MaxRAMPercentage=50 -XX:InitialRAMPercentage=25}
       SRS_HOST: ${SRS_HOST:-syncroom.ru}
+      SRS_HLS_BASE_URL: ${SRS_HLS_BASE_URL:-https://syncroom.ru/live}
+      SRS_RTMP_PORT: ${SRS_RTMP_PORT:-1935}
     depends_on:
       - postgres
       - redis

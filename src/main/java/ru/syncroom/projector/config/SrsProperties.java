@@ -25,4 +25,16 @@ public class SrsProperties {
      * Default: localhost (for local development without Docker).
      */
     private String host = "localhost";
+
+    /**
+     * Optional full base URL for HLS playlists, without trailing slash.
+     * Example prod: {@code https://syncroom.ru/live} (nginx proxies to SRS).
+     * When empty, defaults to {@code http://{host}:8085/live}.
+     */
+    private String hlsBaseUrl = "";
+
+    /**
+     * RTMP publish port exposed to stream hosts (OBS). Default: 1935.
+     */
+    private int rtmpPort = 1935;
 }
