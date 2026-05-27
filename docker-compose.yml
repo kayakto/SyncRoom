@@ -137,7 +137,9 @@ services:
       - "8085:8080"   # HLS  — viewers pull .m3u8 from here
     volumes:
       - ./srs.conf:/usr/local/srs/conf/docker.conf
-    command: ./objs/srs -c conf/docker.conf
+    command: >
+      sh -c "mkdir -p ./objs/nginx/html/live &&
+      ./objs/srs -c conf/docker.conf"
     depends_on:
       - app
     networks:

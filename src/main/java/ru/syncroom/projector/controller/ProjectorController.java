@@ -154,9 +154,21 @@ public class ProjectorController {
     @PostMapping("/api/projector/srs-callback")
     public Map<String, Integer> srsCallback(@RequestBody Map<String, String> body) {
         String action    = body.getOrDefault("action", "");
-        String streamKey = body.getOrDefault("stream", "");
+        String streamKey = resolveSrsStreamKey(body);
         projectorService.handleSrsCallback(action, streamKey);
         // SRS requires { "code": 0 } to consider the callback successful
         return Map.of("code", 0);
+    }
+
+    /** SRS may send stream as "room-{uuid}" or "live/room-{uuid}" depending on publisher. */
+    private static String resolveSrsStreamKey(Map<String, String> body) {
+        String stream = body.getOrDefault("stream", "").trim();
+        if (stream.isEmpty()) {
+            stream = body.getOrDefault("param", "").trim();
+        }
+        if (stream.contains("/")) {
+            stream = stream.substring(stream.lastIndexOf('/') + 1);
+        }
+        return stream;
     }
 }

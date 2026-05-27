@@ -105,7 +105,9 @@ services:
       - "127.0.0.1:8085:8080"
     volumes:
       - ./srs.conf:/usr/local/srs/conf/docker.conf
-    command: ./objs/srs -c conf/docker.conf
+    command: >
+      sh -c "mkdir -p ./objs/nginx/html/live &&
+      ./objs/srs -c conf/docker.conf"
     depends_on:
       - app
     networks:

@@ -418,7 +418,8 @@ public class ProjectorService {
                 .orElse(null);
 
         if (session == null) {
-            log.warn("SRS callback for unknown stream key '{}', action={}", streamKey, action);
+            log.warn("SRS callback for unknown stream key '{}', action={} (check app/media network and stream name)",
+                    streamKey, action);
             return;
         }
 
