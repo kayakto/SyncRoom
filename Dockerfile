@@ -3,14 +3,15 @@ FROM gradle:8.10-jdk21 AS build
 
 WORKDIR /app
 
-# Копируем файлы конфигурации Gradle (сначала для кэширования слоев)
-COPY build.gradle.kts settings.gradle.kts ./
+# Gradle Wrapper + конфиг (кэш слоёв)
+COPY build.gradle.kts settings.gradle.kts gradlew gradlew.bat ./
+COPY gradle ./gradle
 
-# Копируем исходный код
+RUN chmod +x gradlew && ./gradlew --no-daemon dependencies > /dev/null 2>&1 || true
+
 COPY src ./src
 
-# Собираем приложение (gradle уже установлен в образе)
-RUN gradle clean build -x test --no-daemon
+RUN ./gradlew --no-daemon bootJar -x test --refresh-dependencies
 
 # Финальный образ
 FROM eclipse-temurin:21-jre-alpine

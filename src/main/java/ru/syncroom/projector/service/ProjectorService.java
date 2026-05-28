@@ -232,7 +232,7 @@ public class ProjectorService {
             builder.streamKey(s.getStreamKey());
             // rtmpUrl is returned only to the host so they can configure OBS
             if (isHost) {
-                builder.rtmpUrl(buildRtmpUrl(s.getStreamKey()));
+                builder.rtmpUrl(buildRtmpUrl());
             }
         }
 
@@ -247,12 +247,16 @@ public class ProjectorService {
         return String.format("http://%s:8085/live/%s.m3u8", srsProperties.getHost(), streamKey);
     }
 
-    private String buildRtmpUrl(String streamKey) {
+    /**
+     * RTMP ingest URL for OBS "Server" field (app {@code live} only).
+     * Stream key is returned separately — do not append it to this URL or SRS will
+     * nest HLS under {@code live/room-uuid/room-uuid.m3u8} instead of {@code live/room-uuid.m3u8}.
+     */
+    private String buildRtmpUrl() {
         return String.format(
-                "rtmp://%s:%d/live/%s",
+                "rtmp://%s:%d/live",
                 srsProperties.getHost(),
-                srsProperties.getRtmpPort(),
-                streamKey
+                srsProperties.getRtmpPort()
         );
     }
 

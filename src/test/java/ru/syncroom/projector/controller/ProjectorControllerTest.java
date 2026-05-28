@@ -193,7 +193,7 @@ class ProjectorControllerTest {
                 .andExpect(jsonPath("$.projector.streamKey").value("room-" + room.getId()))
                 .andExpect(jsonPath("$.projector.videoUrl").value("http://localhost:8085/live/" + "room-" + room.getId() + ".m3u8"))
                 .andExpect(jsonPath("$.projector.isLive").value(false))
-                .andExpect(jsonPath("$.projector.rtmpUrl").value("rtmp://localhost:1935/live/" + "room-" + room.getId()));
+                .andExpect(jsonPath("$.projector.rtmpUrl").value("rtmp://localhost:1935/live"));
     }
 
     @Test

@@ -360,15 +360,15 @@ class RoomControllerTest {
         }
 
         @Test
-        @DisplayName("POST /api/rooms/{roomId}/join - ошибка: пользователь уже в этой комнате → 400")
+        @DisplayName("POST /api/rooms/{roomId}/join - повторный вход в ту же комнату → 200 (идемпотентно)")
         void testJoinRoom_AlreadyJoined() throws Exception {
                 Room room = createRoom("leisure", "Дом", 10, true);
                 addParticipant(room, testUser);
 
                 mockMvc.perform(post("/api/rooms/{roomId}/join", room.getId())
                                 .header("Authorization", authHeader()))
-                                .andExpect(status().isBadRequest())
-                                .andExpect(jsonPath("$.message").value(containsString("already in room")));
+                                .andExpect(status().isOk())
+                                .andExpect(jsonPath("$.room.id").value(room.getId().toString()));
 
                 assertEquals(1, participantRepository.countByRoomId(room.getId()));
         }

@@ -111,6 +111,11 @@ public class RoomService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new NotFoundException("User not found"));
 
+        // Idempotent join (page refresh must not insert a duplicate participant row).
+        if (participantRepository.findByRoomIdAndUserId(roomId, userId).isPresent()) {
+            return buildJoinRoomResponse(roomId, userId);
+        }
+
         // One room at a time
         List<RoomParticipant> existing = participantRepository.findByUserId(userId);
         if (!existing.isEmpty()) {
@@ -165,25 +170,26 @@ public class RoomService {
             ensureSeatGridAndDefaultBotsForRoom(spareRoomId);
         }
 
-        Room actualRoom = roomRepository.findById(actualRoomId).orElseThrow();
-        List<RoomParticipant> allParticipants = participantRepository.findByRoomId(actualRoomId);
-        int totalMembers = allParticipants.size();
-        int seatedCount = seatRepository.countOccupiedByRoomId(actualRoomId);
-
         RoomParticipant myParticipation = participantRepository
                 .findByRoomIdAndUserId(actualRoomId, userId).orElseThrow();
         ParticipantResponse myDto = ParticipantResponse.from(myParticipation, publicAbsoluteUrlResolver);
-
         publish(actualRoomId, RoomEventType.PARTICIPANT_JOINED, myDto);
 
+        return buildJoinRoomResponse(actualRoomId, userId);
+    }
+
+    private JoinRoomResponse buildJoinRoomResponse(UUID roomId, UUID userId) {
+        Room room = roomRepository.findById(roomId).orElseThrow();
+        List<RoomParticipant> allParticipants = participantRepository.findByRoomId(roomId);
+        int totalMembers = allParticipants.size();
+        int seatedCount = seatRepository.countOccupiedByRoomId(roomId);
         List<ParticipantResponse> participantDtos = allParticipants.stream()
                 .map(p -> ParticipantResponse.from(p, publicAbsoluteUrlResolver)).toList();
-
-        List<SeatDto> seats = loadSeatDtosOrdered(actualRoomId);
-        List<TopParticipantResponse> topParticipants = getTopParticipants(actualRoomId, TOP_PARTICIPANTS_LIMIT);
+        List<SeatDto> seats = loadSeatDtosOrdered(roomId);
+        List<TopParticipantResponse> topParticipants = getTopParticipants(roomId, TOP_PARTICIPANTS_LIMIT);
 
         return JoinRoomResponse.builder()
-                .room(RoomResponse.from(actualRoom, seatedCount, totalMembers - seatedCount, seats, topParticipants))
+                .room(RoomResponse.from(room, seatedCount, totalMembers - seatedCount, seats, topParticipants))
                 .participants(participantDtos)
                 .build();
     }

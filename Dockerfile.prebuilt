@@ -1,0 +1,17 @@
+# Локальная сборка без Gradle внутри Docker (когда Plugin Portal недоступен из контейнера).
+#
+# На хосте:
+#   gradle bootJar -x test
+#   docker build -f Dockerfile.prebuilt -t syncroom-app:local .
+#
+FROM eclipse-temurin:21-jre-alpine
+
+WORKDIR /app
+
+RUN addgroup -S spring && adduser -S spring -G spring
+USER spring:spring
+
+COPY build/libs/syncroom-boot.jar app.jar
+
+EXPOSE 8080
+ENTRYPOINT ["java", "-jar", "app.jar"]
