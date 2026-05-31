@@ -62,6 +62,7 @@ public class GameService {
     private final GameTraceLogger gameTraceLogger;
     private final GarticDrawingAssetStorage garticDrawingAssetStorage;
     private final ObjectProvider<GameQueueService> gameQueueServiceProvider;
+    private final ObjectProvider<GameService> self;
     private final PublicAbsoluteUrlResolver publicAbsoluteUrlResolver;
     private static final int LOBBY_DISCONNECT_UNREADY_DELAY_SEC = 10;
     private static final int TOTAL_ROUNDS = 3;
@@ -647,7 +648,8 @@ public class GameService {
                 "timeLimit", 60
         ));
         scheduleQuiplashBotAnswers(prompt);
-        gameTimerService.schedule(GameTimerService.answerKey(game.getId(), round), 60, () -> onAnswerTimeout(game.getId(), round));
+        gameTimerService.schedule(GameTimerService.answerKey(game.getId(), round), 60,
+                () -> tx().runOnAnswerTimeout(game.getId(), round));
     }
 
     private void onAnswerTimeout(UUID gameId, int round) {
@@ -681,7 +683,8 @@ public class GameService {
                 "timeLimit", 30
         ));
         scheduleQuiplashBotVotes(prompt);
-        gameTimerService.schedule(GameTimerService.voteKey(gameId, round), 30, () -> onVoteTimeout(gameId, round));
+        gameTimerService.schedule(GameTimerService.voteKey(gameId, round), 30,
+                () -> tx().runOnVoteTimeout(gameId, round));
     }
 
     private void scheduleQuiplashBotAnswers(QuiplashPrompt prompt) {
@@ -693,42 +696,22 @@ public class GameService {
             }
             String key = "game:" + gameId + ":bot:quiplash:answer:round:" + round + ":player:" + player.getId();
             int delaySec = ThreadLocalRandom.current().nextInt(1, 4);
-            gameTimerService.schedule(key, delaySec, () -> {
-                try {
-                    submitAnswerForPlayer(prompt, player, botQuiplashAnswer(prompt.getText()), false);
-                } catch (Exception e) {
-                    log.warn("Quiplash bot answer failed: gameId={}, round={}, botPlayerId={}, reason={}",
-                            gameId, round, player.getId(), e.getMessage());
-                }
-            });
+            gameTimerService.schedule(key, delaySec,
+                    () -> tx().runBotQuiplashAnswer(gameId, round, player.getId()));
         }
     }
 
     private void scheduleQuiplashBotVotes(QuiplashPrompt prompt) {
         UUID gameId = prompt.getGame().getId();
         int round = prompt.getRound();
-        List<QuiplashAnswer> answers = answerRepository.findByPromptId(prompt.getId());
         for (GamePlayer player : gamePlayerRepository.findByGameId(gameId)) {
             if (!isBot(player)) {
                 continue;
             }
             String key = "game:" + gameId + ":bot:quiplash:vote:round:" + round + ":player:" + player.getId();
             int delaySec = ThreadLocalRandom.current().nextInt(1, 4);
-            gameTimerService.schedule(key, delaySec, () -> {
-                try {
-                    List<QuiplashAnswer> choices = answers.stream()
-                            .filter(a -> !a.getPlayer().getId().equals(player.getId()))
-                            .toList();
-                    if (choices.isEmpty()) {
-                        return;
-                    }
-                    QuiplashAnswer selected = choices.get(ThreadLocalRandom.current().nextInt(choices.size()));
-                    submitVoteForPlayer(player, selected.getId());
-                } catch (Exception e) {
-                    log.warn("Quiplash bot vote failed: gameId={}, round={}, botPlayerId={}, reason={}",
-                            gameId, round, player.getId(), e.getMessage());
-                }
-            });
+            gameTimerService.schedule(key, delaySec,
+                    () -> tx().runBotQuiplashVote(gameId, round, player.getId()));
         }
     }
 
@@ -775,12 +758,8 @@ public class GameService {
             notifyGameQueueFinished(gameId);
             return;
         }
-        gameTimerService.schedule("game:" + gameId + ":next:" + round, 5, () -> {
-            GameSession session = gameSessionRepository.findById(gameId).orElse(null);
-            if (session != null && "IN_PROGRESS".equals(session.getStatus())) {
-                startRound(session, round + 1);
-            }
-        });
+        gameTimerService.schedule("game:" + gameId + ":next:" + round, 5,
+                () -> tx().runNextRound(gameId, round + 1));
     }
 
     private void startGarticGame(GameSession game, List<GamePlayer> players) {
@@ -1019,7 +998,8 @@ public class GameService {
 
     private void scheduleGarticTimeout(UUID gameId, int stepNumber) {
         int timeout = "DRAWING".equals(expectedGarticType(stepNumber)) ? garticDrawTimeoutSec : garticTextTimeoutSec;
-        gameTimerService.schedule(garticStepKey(gameId, stepNumber), timeout, () -> onGarticStepTimeout(gameId, stepNumber));
+        gameTimerService.schedule(garticStepKey(gameId, stepNumber), timeout,
+                () -> tx().runGarticStepTimeout(gameId, stepNumber));
     }
 
     private String garticStepKey(UUID gameId, int stepNumber) {
@@ -1044,24 +1024,8 @@ public class GameService {
         }
         GamePlayer latest = lobbyPlayers.getFirst();
         UUID gameId = latest.getGame().getId();
-        gameTimerService.schedule(disconnectUnreadyKey(gameId, userId), LOBBY_DISCONNECT_UNREADY_DELAY_SEC, () -> {
-            try {
-                if (!gamePlayerRepository.existsByGameIdAndUserId(gameId, userId)) {
-                    return;
-                }
-                GameSession game = gameSessionRepository.findById(gameId).orElse(null);
-                if (game == null || !"LOBBY".equals(game.getStatus())) {
-                    return;
-                }
-                GamePlayer gp = gamePlayerRepository.findByGameIdAndUserId(gameId, userId).orElse(null);
-                if (gp == null || !Boolean.TRUE.equals(gp.getIsReady())) {
-                    return;
-                }
-                markUnready(gameId, userId);
-            } catch (Exception ignored) {
-                // Disconnect timeout is best-effort and should not break scheduler thread.
-            }
-        });
+        gameTimerService.schedule(disconnectUnreadyKey(gameId, userId), LOBBY_DISCONNECT_UNREADY_DELAY_SEC,
+                () -> tx().runLobbyUnreadyOnDisconnect(gameId, userId));
     }
 
     private boolean isBot(GamePlayer player) {
@@ -1118,7 +1082,7 @@ public class GameService {
             gameTraceLogger.trace(gameId, "BOT_STEP_SCHEDULED bot=" + actor.name() + "(" + actor.participantId() + ")"
                     + " step=" + stepNumber + " type=" + type + " delaySec=" + delaySec);
             gameTimerService.schedule(key, delaySec, () ->
-                    executeBotStepWithRetry(gameId, actor, stepNumber, type, content, 1));
+                    tx().runBotGarticStep(gameId, actor.gamePlayerId(), stepNumber, type, content, 1));
         };
         // On startGame we are inside an open transaction; scheduling before commit can race and cause "Chain not found".
         if (scheduleBotAfterCommit && TransactionSynchronizationManager.isActualTransactionActive()) {
@@ -1153,7 +1117,7 @@ public class GameService {
                 gameTraceLogger.trace(gameId, "BOT_STEP_RETRY bot=" + actor.name() + "(" + actor.participantId() + ")"
                         + " step=" + stepNumber + " type=" + type + " attempt=" + nextAttempt + " reason=" + reason);
                 gameTimerService.schedule(retryKey, 2, () ->
-                        executeBotStepWithRetry(gameId, actor, stepNumber, type, content, nextAttempt));
+                        tx().runBotGarticStep(gameId, actor.gamePlayerId(), stepNumber, type, content, nextAttempt));
                 return;
             }
             log.warn("Bot step failed: gameId={}, botPlayerId={}, step={}, type={}, attempt={}, reason={}",
@@ -1232,7 +1196,8 @@ public class GameService {
         Runnable scheduleWork = () -> {
             gameTraceLogger.trace(gameId, "BOT_STEP_SCHEDULED bot=" + actor.name() + "(" + actor.participantId() + ")"
                     + " step=" + stepNumber + " type=DRAWING delaySec=" + delaySec);
-            gameTimerService.schedule(key, delaySec, () -> executeBotDrawingStep(gameId, actor, stepNumber, phrase));
+            gameTimerService.schedule(key, delaySec, () ->
+                    tx().runBotGarticDrawingStep(gameId, actor.gamePlayerId(), stepNumber, phrase));
         };
         if (scheduleBotAfterCommit && TransactionSynchronizationManager.isActualTransactionActive()) {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
@@ -1503,6 +1468,101 @@ public class GameService {
         return garticDrawingAssetStorage.publicDownloadRedirect(gameId, assetId)
                 .map(GarticDrawingServeResult::redirect)
                 .orElseGet(() -> GarticDrawingServeResult.bytes(garticDrawingAssetStorage.loadPng(gameId, assetId)));
+    }
+
+    private GameService tx() {
+        return self.getObject();
+    }
+
+    /** Timer callbacks run outside Spring's request thread — invoke through proxy for an open Hibernate session. */
+    @Transactional
+    public void runOnAnswerTimeout(UUID gameId, int round) {
+        onAnswerTimeout(gameId, round);
+    }
+
+    @Transactional
+    public void runOnVoteTimeout(UUID gameId, int round) {
+        onVoteTimeout(gameId, round);
+    }
+
+    @Transactional
+    public void runNextRound(UUID gameId, int round) {
+        GameSession session = gameSessionRepository.findById(gameId).orElse(null);
+        if (session != null && "IN_PROGRESS".equals(session.getStatus())) {
+            startRound(session, round);
+        }
+    }
+
+    @Transactional
+    public void runBotQuiplashAnswer(UUID gameId, int round, UUID gamePlayerId) {
+        QuiplashPrompt prompt = promptRepository.findByGameIdAndRound(gameId, round).orElse(null);
+        if (prompt == null) {
+            return;
+        }
+        GamePlayer player = gamePlayerRepository.findById(gamePlayerId).orElse(null);
+        if (player == null || !isBot(player)) {
+            return;
+        }
+        submitAnswerForPlayer(prompt, player, botQuiplashAnswer(prompt.getText()), false);
+    }
+
+    @Transactional
+    public void runBotQuiplashVote(UUID gameId, int round, UUID gamePlayerId) {
+        GamePlayer player = gamePlayerRepository.findById(gamePlayerId).orElse(null);
+        if (player == null || !isBot(player)) {
+            return;
+        }
+        QuiplashPrompt prompt = promptRepository.findByGameIdAndRound(gameId, round).orElse(null);
+        if (prompt == null) {
+            return;
+        }
+        List<QuiplashAnswer> choices = answerRepository.findByPromptId(prompt.getId()).stream()
+                .filter(a -> !a.getPlayer().getId().equals(player.getId()))
+                .toList();
+        if (choices.isEmpty()) {
+            return;
+        }
+        QuiplashAnswer selected = choices.get(ThreadLocalRandom.current().nextInt(choices.size()));
+        submitVoteForPlayer(player, selected.getId());
+    }
+
+    @Transactional
+    public void runGarticStepTimeout(UUID gameId, int stepNumber) {
+        onGarticStepTimeout(gameId, stepNumber);
+    }
+
+    @Transactional
+    public void runBotGarticStep(UUID gameId, UUID gamePlayerId, int stepNumber, String type, String content, int attempt) {
+        GamePlayer botPlayer = gamePlayerRepository.findById(gamePlayerId).orElse(null);
+        if (botPlayer == null) {
+            return;
+        }
+        executeBotStepWithRetry(gameId, toBotActor(botPlayer), stepNumber, type, content, attempt);
+    }
+
+    @Transactional
+    public void runBotGarticDrawingStep(UUID gameId, UUID gamePlayerId, int stepNumber, String phrase) {
+        GamePlayer botPlayer = gamePlayerRepository.findById(gamePlayerId).orElse(null);
+        if (botPlayer == null) {
+            return;
+        }
+        executeBotDrawingStep(gameId, toBotActor(botPlayer), stepNumber, phrase);
+    }
+
+    @Transactional
+    public void runLobbyUnreadyOnDisconnect(UUID gameId, UUID userId) {
+        if (!gamePlayerRepository.existsByGameIdAndUserId(gameId, userId)) {
+            return;
+        }
+        GameSession game = gameSessionRepository.findById(gameId).orElse(null);
+        if (game == null || !"LOBBY".equals(game.getStatus())) {
+            return;
+        }
+        GamePlayer gp = gamePlayerRepository.findByGameIdAndUserId(gameId, userId).orElse(null);
+        if (gp == null || !Boolean.TRUE.equals(gp.getIsReady())) {
+            return;
+        }
+        tx().markUnready(gameId, userId);
     }
 
     /**

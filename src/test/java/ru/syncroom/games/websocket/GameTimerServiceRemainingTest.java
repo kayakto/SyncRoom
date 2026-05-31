@@ -26,4 +26,20 @@ class GameTimerServiceRemainingTest {
         timers.cancel(key);
         assertEquals(-1, timers.getRemainingSeconds(key));
     }
+
+    @Test
+    @DisplayName("исключение в задаче не ломает планировщик")
+    void failedTaskDoesNotBreakScheduler() throws InterruptedException {
+        GameTimerService timers = new GameTimerService();
+        CountDownLatch failed = new CountDownLatch(1);
+        timers.schedule("fail", 0, () -> {
+            failed.countDown();
+            throw new RuntimeException("boom");
+        });
+        assertTrue(failed.await(2, TimeUnit.SECONDS));
+
+        CountDownLatch ok = new CountDownLatch(1);
+        timers.schedule("ok", 0, ok::countDown);
+        assertTrue(ok.await(2, TimeUnit.SECONDS));
+    }
 }

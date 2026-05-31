@@ -1,5 +1,6 @@
 package ru.syncroom.games.websocket;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.HashSet;
@@ -7,6 +8,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.*;
 
+@Slf4j
 @Component
 public class GameTimerService {
 
@@ -15,8 +17,18 @@ public class GameTimerService {
 
     public void schedule(String key, int seconds, Runnable task) {
         cancel(key);
-        ScheduledFuture<?> future = scheduler.schedule(task, Math.max(seconds, 0), TimeUnit.SECONDS);
+        ScheduledFuture<?> future = scheduler.schedule(wrap(key, task), Math.max(seconds, 0), TimeUnit.SECONDS);
         timers.put(key, future);
+    }
+
+    private Runnable wrap(String key, Runnable task) {
+        return () -> {
+            try {
+                task.run();
+            } catch (Exception e) {
+                log.error("Game timer task failed: key={}", key, e);
+            }
+        };
     }
 
     public void cancel(String key) {

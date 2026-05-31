@@ -130,12 +130,12 @@ class GameQueueStartOrderTest {
     }
 
     @Test
-    @DisplayName("QUEUE_STARTED уходит до startGame")
-    void queueStartedBeforeStartGame() {
+    @DisplayName("startGame уходит до QUEUE_STARTED (replay при подписке требует IN_PROGRESS)")
+    void startGameBeforeQueueStarted() {
         gameQueueService.startFromQueue(room.getId(), "QUIPLASH", u1.getId());
 
-        InOrder order = inOrder(queueEventSender, gameService);
-        order.verify(queueEventSender).send(eq(room.getId()), eq("QUEUE_STARTED"), any(Map.class));
+        InOrder order = inOrder(gameService, queueEventSender);
         order.verify(gameService).startGame(sessionId);
+        order.verify(queueEventSender).send(eq(room.getId()), eq("QUEUE_STARTED"), any(Map.class));
     }
 }

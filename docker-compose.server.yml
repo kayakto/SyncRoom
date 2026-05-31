@@ -1,13 +1,13 @@
 services:
-  # Resource budget for a 4 vCPU / 8 GB host:
-  #   postgres   : 1.0 CPU / 1.0 GB
-  #   app (JVM)  : 2.0 CPU / 2.0 GB
-  #   inference  : 0.5 CPU / 0.5 GB
-  #   media (SRS): 0.5 CPU / 0.25 GB
-  #   redis      : 0.5 CPU / 0.25 GB
-  #   frontend   : 0.25 CPU / 0.1 GB
+  # Resource budget for a 4 vCPU / 8 GB RAM host (memory limits ×2 vs 4 GB setup):
+  #   postgres   : 1.0 CPU / 2.0 GB
+  #   app (JVM)  : 2.0 CPU / 4.0 GB
+  #   inference  : 0.5 CPU / 1.0 GB
+  #   media (SRS): 0.5 CPU / 0.5 GB
+  #   redis      : 0.5 CPU / 0.5 GB
+  #   frontend   : 0.25 CPU / 0.25 GB
   #   ----------------------------------
-  #   total      : ~4.75 CPU / ~4.1 GB   (CPU is a soft cap, never all at once)
+  #   total      : ~4.75 CPU / ~8.2 GB   (CPU is a soft cap, never all at once)
   postgres:
     image: postgres:17-alpine
     container_name: syncroom-postgres
@@ -24,16 +24,16 @@ services:
       resources:
         limits:
           cpus: "1.00"
-          memory: 1G
+          memory: 2G
         reservations:
           cpus: "0.25"
-          memory: 256M
+          memory: 512M
 
   redis:
     image: redis:7-alpine
     container_name: syncroom-redis
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "192mb", "--maxmemory-policy", "allkeys-lru"]
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "384mb", "--maxmemory-policy", "allkeys-lru"]
     volumes:
       - redis_data:/data
     networks:
@@ -42,7 +42,7 @@ services:
       resources:
         limits:
           cpus: "0.50"
-          memory: 256M
+          memory: 512M
 
   app:
     build:
@@ -75,10 +75,10 @@ services:
       resources:
         limits:
           cpus: "2.00"
-          memory: 2G
+          memory: 4G
         reservations:
           cpus: "0.50"
-          memory: 512M
+          memory: 1G
 
   inference-mock:
     build:
@@ -92,7 +92,7 @@ services:
       resources:
         limits:
           cpus: "0.50"
-          memory: 512M
+          memory: 1G
 
   # SRS media server: RTMP intake on 1935, HLS on 8085.
   # Sized for ~30 concurrent HLS viewers of a single 720p/2.5 Mbit/s stream.
@@ -116,7 +116,7 @@ services:
       resources:
         limits:
           cpus: "0.50"
-          memory: 256M
+          memory: 512M
 
   frontend:
     build:
@@ -135,7 +135,7 @@ services:
       resources:
         limits:
           cpus: "0.25"
-          memory: 128M
+          memory: 256M
 
 volumes:
   postgres_data:

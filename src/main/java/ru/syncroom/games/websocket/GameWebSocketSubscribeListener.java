@@ -13,7 +13,8 @@ import java.util.UUID;
 
 /**
  * STOMP does not replay topic messages published before SUBSCRIBE. When a client subscribes to
- * {@code /topic/game/{gameId}}, send the current game phase (and roster) directly to that user.
+ * {@code /topic/game/{gameId}} or {@code /user/topic/game/{gameId}}, send the current game phase
+ * (and roster) directly to that user via {@code convertAndSendToUser}.
  */
 @Slf4j
 @Component
@@ -21,6 +22,7 @@ import java.util.UUID;
 public class GameWebSocketSubscribeListener {
 
     private static final String GAME_TOPIC_PREFIX = "/topic/game/";
+    private static final String USER_GAME_TOPIC_PREFIX = "/user/topic/game/";
 
     private final GameService gameService;
 
@@ -28,14 +30,8 @@ public class GameWebSocketSubscribeListener {
     public void onSubscribe(SessionSubscribeEvent event) {
         StompHeaderAccessor acc = StompHeaderAccessor.wrap(event.getMessage());
         String dest = acc.getDestination();
-        if (dest == null || !dest.startsWith(GAME_TOPIC_PREFIX)) {
-            return;
-        }
-        String gameIdRaw = dest.substring(GAME_TOPIC_PREFIX.length());
-        UUID gameId;
-        try {
-            gameId = UUID.fromString(gameIdRaw);
-        } catch (IllegalArgumentException e) {
+        UUID gameId = parseGameIdFromDestination(dest);
+        if (gameId == null) {
             return;
         }
         Principal principal = acc.getUser();
@@ -52,6 +48,25 @@ public class GameWebSocketSubscribeListener {
             gameService.replayMissedEventsOnSubscribe(gameId, userId);
         } catch (Exception e) {
             log.debug("Game subscribe replay skipped: gameId={} userId={} — {}", gameId, userId, e.getMessage());
+        }
+    }
+
+    private static UUID parseGameIdFromDestination(String dest) {
+        if (dest == null) {
+            return null;
+        }
+        String gameIdRaw;
+        if (dest.startsWith(USER_GAME_TOPIC_PREFIX)) {
+            gameIdRaw = dest.substring(USER_GAME_TOPIC_PREFIX.length());
+        } else if (dest.startsWith(GAME_TOPIC_PREFIX)) {
+            gameIdRaw = dest.substring(GAME_TOPIC_PREFIX.length());
+        } else {
+            return null;
+        }
+        try {
+            return UUID.fromString(gameIdRaw);
+        } catch (IllegalArgumentException e) {
+            return null;
         }
     }
 }

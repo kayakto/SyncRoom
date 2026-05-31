@@ -191,13 +191,14 @@ public class GameQueueService {
         touchQueueNotEmpty(queue);
         gameQueueRepository.save(queue);
 
-        // Clients learn gameId from QUEUE_STARTED and subscribe to /topic/game/{id} before phases are published.
+        // startGame first so status=IN_PROGRESS and the first prompt exist before clients subscribe;
+        // missed live broadcasts are replayed on SUBSCRIBE (GameWebSocketSubscribeListener).
+        gameService.startGame(session.getId());
+
         queueEventSender.send(roomId, "QUEUE_STARTED", Map.of(
                 "gameType", gameType,
                 "gameSessionId", session.getId().toString()
         ));
-
-        gameService.startGame(session.getId());
 
         return GameQueueStartResponse.builder()
                 .gameSessionId(session.getId().toString())
