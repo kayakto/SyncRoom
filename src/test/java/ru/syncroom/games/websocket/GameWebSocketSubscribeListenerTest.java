@@ -41,14 +41,14 @@ class GameWebSocketSubscribeListenerTest {
     @DisplayName("broadcast /topic/game/{id} триггерит replay")
     void broadcastTopicTriggersReplay() {
         publishSubscribe("/topic/game/" + gameId);
-        verify(gameService).replayMissedEventsOnSubscribe(gameId, userId);
+        verify(gameService, timeout(500)).replayMissedEventsOnSubscribe(gameId, userId);
     }
 
     @Test
     @DisplayName("user /user/topic/game/{id} триггерит replay")
     void userTopicTriggersReplay() {
         publishSubscribe("/user/topic/game/" + gameId);
-        verify(gameService).replayMissedEventsOnSubscribe(gameId, userId);
+        verify(gameService, timeout(500)).replayMissedEventsOnSubscribe(gameId, userId);
     }
 
     @Test

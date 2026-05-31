@@ -273,8 +273,8 @@ class RoomServiceWebSocketTest {
     }
 
     @Test
-    @DisplayName("WS событие не публикуется если join выбрасывает исключение (уже в комнате)")
-    void testJoinRoom_NoEventPublishedOnError() {
+    @DisplayName("WS событие не публикуется при повторном join (уже в комнате)")
+    void testJoinRoom_NoEventPublishedOnDuplicateJoin() {
         // Given — user already in the room
         participantRepository.save(RoomParticipant.builder()
                 .room(testRoom)
@@ -282,11 +282,11 @@ class RoomServiceWebSocketTest {
                 .role(ParticipantRole.OBSERVER)
                 .build());
 
-        // When
-        assertThrows(Exception.class,
-                () -> roomService.joinRoom(testRoom.getId(), testUser.getId()));
+        // When — idempotent re-join (e.g. page refresh)
+        JoinRoomResponse response = roomService.joinRoom(testRoom.getId(), testUser.getId());
 
-        // Then — no event should be published
+        // Then — success without a duplicate PARTICIPANT_JOINED broadcast
+        assertNotNull(response.getRoom());
         verifyNoInteractions(messagingTemplate);
     }
 
