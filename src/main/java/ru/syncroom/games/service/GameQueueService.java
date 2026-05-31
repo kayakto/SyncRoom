@@ -179,11 +179,10 @@ public class GameQueueService {
 
         GameSession session = gameService.createLobbySessionWithRoster(roomId, gameType, humanIds, botIds);
 
-        gameQueuePlayerRepository.deleteAll(humans);
-        gameQueueBotRepository.deleteAll(bots);
-
         queue = reloadQueue(queue.getId());
-        // deleteAll не очищает in-memory @OneToMany — иначе save() падает с ObjectDeletedException
+        // Удаляем игроков/ботов очереди ровно одним способом — через orphanRemoval (clear() + save()).
+        // Явный deleteAll + clear() давал двойное удаление одних и тех же строк → StaleObjectStateException
+        // ("Row was updated or deleted by another transaction") и 500 на POST /start.
         queue.getPlayers().clear();
         queue.getBots().clear();
         queue.setLinkedGameSessionId(session.getId());
